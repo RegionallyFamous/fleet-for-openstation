@@ -1,9 +1,9 @@
 <?php
 /**
  * Plugin Name:       Fleet for OpenStation
- * Plugin URI:        https://github.com/WordPress/fleet-for-openstation
+ * Plugin URI:        https://github.com/RegionallyFamous/fleet-for-openstation
  * Description:       Connect WordPress sites and install OpenStation from one WordPress-native fleet screen.
- * Version:           0.1.0
+ * Version:           0.1.1
  * Requires at least: 6.5
  * Requires PHP:      7.4
  * Requires Plugins:  desktop-mode
@@ -17,7 +17,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'OPENSTATION_FLEET_VERSION', '0.1.0' );
+define( 'OPENSTATION_FLEET_VERSION', '0.1.1' );
 define( 'OPENSTATION_FLEET_FILE', __FILE__ );
 define( 'OPENSTATION_FLEET_DIR', plugin_dir_path( __FILE__ ) );
 

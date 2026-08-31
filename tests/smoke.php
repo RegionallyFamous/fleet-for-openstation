@@ -142,4 +142,24 @@ assert( true === $is_hub->invoke( null, 'https://hub.example' ) );
 assert( true === $is_hub->invoke( null, 'https://hub.example/wp' ) );
 assert( false === $is_hub->invoke( null, 'https://hub.example/client' ) );
 
+$authorization_url = $class->getMethod( 'authorization_url' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$authorization_url->setAccessible( true );
+}
+$callback  = 'https://hub.example/wp-admin/admin-post.php?action=openstation_fleet_authorized&state=1234&_wpnonce=nonce';
+$authorize = $authorization_url->invoke(
+	null,
+	'https://client.example/wp-admin/authorize-application.php',
+	array(
+		'app_name'    => 'Fleet for OpenStation',
+		'app_id'      => 'app-id',
+		'success_url' => $callback,
+		'reject_url'  => $callback . '&rejected=1',
+	)
+);
+parse_str( parse_url( $authorize, PHP_URL_QUERY ), $authorize_query );
+assert( $callback === rawurldecode( $authorize_query['success_url'] ) );
+assert( $callback . '&rejected=1' === rawurldecode( $authorize_query['reject_url'] ) );
+assert( ! isset( $authorize_query['state'] ) );
+
 echo "Fleet smoke checks passed.\n";

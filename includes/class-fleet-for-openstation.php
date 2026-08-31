@@ -150,14 +150,14 @@ final class OpenStation_Fleet {
 			__( 'Fleet for OpenStation on %s', 'fleet-for-openstation' ),
 			wp_parse_url( home_url(), PHP_URL_HOST )
 		);
-		$authorize = add_query_arg(
+		$authorize = self::authorization_url(
+			$discovery['authorization_url'],
 			array(
 				'app_name'    => $app_name,
 				'app_id'      => self::get_app_id(),
 				'success_url' => $callback,
 				'reject_url'  => $reject,
-			),
-			$discovery['authorization_url']
+			)
 		);
 
 		wp_redirect( $authorize ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- validated same-origin external authorization endpoint.
@@ -523,6 +523,25 @@ final class OpenStation_Fleet {
 		}
 
 		return trailingslashit( (string) $site['rest_url'] ) . $path;
+	}
+
+	/**
+	 * Build the Application Password authorization URL.
+	 *
+	 * add_query_arg() expects new values to already be URL-encoded. Encoding
+	 * nested callback URLs keeps their state and nonce arguments inside the
+	 * success and rejection URLs instead of leaking them into the outer query.
+	 *
+	 * @param string $endpoint Authorization endpoint.
+	 * @param array  $args     Authorization arguments.
+	 * @return string
+	 */
+	private static function authorization_url( $endpoint, $args ) {
+		foreach ( $args as $key => $value ) {
+			$args[ $key ] = rawurlencode( (string) $value );
+		}
+
+		return add_query_arg( $args, $endpoint );
 	}
 
 	/**

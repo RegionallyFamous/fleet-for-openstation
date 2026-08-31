@@ -3,7 +3,7 @@ Contributors: openstation
 Tags: openstation, multisite, agency, site management
 Requires at least: 6.5
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -22,6 +22,9 @@ Fleet stores each manager's connected sites in user meta and encrypts Applicatio
 3. Open Fleet and connect an HTTPS WordPress site.
 
 == Changelog ==
+
+= 0.1.1 =
+* Preserve Fleet's state and nonce when returning from Application Password approval.
 
 = 0.1.0 =
 * Initial experimental release.

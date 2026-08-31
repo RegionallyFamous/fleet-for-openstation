@@ -1,0 +1,8 @@
+/.git/
+/.github/
+/bin/
+/tests/
+/README.md
+/AGENTS.md
+/.distignore
+/.gitignore

@@ -70,7 +70,7 @@ final class OpenStation_Fleet {
 			<?php self::render_notice( $notice ); ?>
 
 			<h2><?php esc_html_e( 'Connect a site', 'fleet-for-openstation' ); ?></h2>
-			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post" target="_top">
 				<input type="hidden" name="action" value="openstation_fleet_connect">
 				<?php wp_nonce_field( 'openstation_fleet_connect' ); ?>
 				<label class="screen-reader-text" for="fleet-for-openstation-site-url"><?php esc_html_e( 'WordPress site URL', 'fleet-for-openstation' ); ?></label>

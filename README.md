@@ -1,6 +1,6 @@
-# OpenStation Fleet
+# Fleet for OpenStation
 
-OpenStation Fleet is an experimental feature plugin for agencies managing multiple WordPress sites. It connects sites through WordPress Core Application Passwords and installs or activates OpenStation through the Core Plugins REST API.
+Fleet for OpenStation is an experimental feature plugin for agencies managing multiple WordPress sites. It connects sites through WordPress Core Application Passwords and installs or activates OpenStation through the Core Plugins REST API.
 
 ## What it deliberately reuses
 
@@ -13,18 +13,22 @@ OpenStation Fleet is an experimental feature plugin for agencies managing multip
 
 There is no hosted control plane, custom database table, agent plugin, queue, JavaScript application, or custom REST namespace.
 
+## Hub and managed sites
+
+The WordPress install with this plugin activated is the Fleet hub. Managed sites install ordinary OpenStation only. The relationship is represented by a named, revocable Application Password on each managed site; disconnecting revokes it.
+
 ## Build
 
 ```sh
 ./bin/build.sh
 ```
 
-The installable plugin is written to `dist/openstation-fleet.zip`.
+The installable plugin is written to `dist/fleet-for-openstation.zip`.
 
 ## Try it
 
-1. Install and activate OpenStation (`desktop-mode`) on the hub site.
-2. Install and activate `dist/openstation-fleet.zip`.
+1. Install and activate OpenStation (`desktop-mode`) on an HTTPS hub site.
+2. Install and activate `dist/fleet-for-openstation.zip`.
 3. Open **Fleet** in wp-admin or from the OpenStation desktop.
 4. Enter an HTTPS WordPress site URL and approve the Application Password request on that site.
 5. Use **Install OpenStation** for sites where it is missing.

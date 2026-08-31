@@ -1,4 +1,4 @@
-# OpenStation Fleet repository instructions
+# Fleet for OpenStation repository instructions
 
 - Keep Fleet WordPress-native: prefer Core admin pages, forms, nonces, user meta, HTTP APIs, Application Passwords, and REST endpoints over custom infrastructure.
 - Never store or log an Application Password in plaintext. Keep credentials per local user and encrypted at rest.

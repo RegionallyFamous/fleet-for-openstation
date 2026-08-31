@@ -3,7 +3,7 @@
  * Remove local Fleet metadata. Remote Application Passwords must be revoked
  * with the Disconnect action before uninstalling.
  *
- * @package OpenStationFleet
+ * @package FleetForOpenStation
  */
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;

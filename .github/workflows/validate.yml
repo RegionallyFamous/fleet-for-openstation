@@ -19,5 +19,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: matrix.php == '8.3'
         with:
-          name: openstation-fleet
-          path: dist/openstation-fleet.zip
+          name: fleet-for-openstation
+          path: dist/fleet-for-openstation.zip

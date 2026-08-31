@@ -2,7 +2,7 @@
 /**
  * Fleet screen and WordPress-to-WordPress orchestration.
  *
- * @package OpenStationFleet
+ * @package FleetForOpenStation
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -12,11 +12,11 @@ defined( 'ABSPATH' ) || exit;
  */
 final class OpenStation_Fleet {
 	const CAPABILITY       = 'manage_options';
-	const MENU_SLUG        = 'openstation-fleet';
+	const MENU_SLUG        = 'fleet-for-openstation';
 	const USER_META_SITES  = 'openstation_fleet_sites';
 	const USER_META_APP_ID = 'openstation_fleet_app_id';
 	const PLUGIN_SLUG      = 'desktop-mode';
-	const PLUGIN_FILE      = 'desktop-mode/desktop-mode.php';
+	const PLUGIN_REST_ID   = 'desktop-mode/desktop-mode';
 
 	/**
 	 * Register the admin screen and form handlers.
@@ -36,8 +36,8 @@ final class OpenStation_Fleet {
 	 */
 	public static function register_menu() {
 		add_menu_page(
-			__( 'OpenStation Fleet', 'openstation-fleet' ),
-			__( 'Fleet', 'openstation-fleet' ),
+			__( 'Fleet for OpenStation', 'fleet-for-openstation' ),
+			__( 'Fleet', 'fleet-for-openstation' ),
 			self::CAPABILITY,
 			self::MENU_SLUG,
 			array( __CLASS__, 'render_page' ),
@@ -51,39 +51,45 @@ final class OpenStation_Fleet {
 	 */
 	public static function render_page() {
 		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'openstation-fleet' ) );
+			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
 		}
 
 		$sites  = self::get_sites();
 		$notice = sanitize_key( self::request_string( $_GET, 'fleet_notice' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display-only notice code.
 		?>
 		<div class="wrap">
-			<h1><?php esc_html_e( 'OpenStation Fleet', 'openstation-fleet' ); ?></h1>
-			<p><?php esc_html_e( 'Connect client sites with a revocable WordPress Application Password, then install and activate OpenStation through the WordPress Core Plugins API.', 'openstation-fleet' ); ?></p>
+			<h1><?php esc_html_e( 'Fleet for OpenStation', 'fleet-for-openstation' ); ?></h1>
+			<p><?php esc_html_e( 'Connect client sites with a revocable WordPress Application Password, then install and activate OpenStation through the WordPress Core Plugins API.', 'fleet-for-openstation' ); ?></p>
+			<div class="notice notice-info inline">
+				<p>
+					<strong><?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?> <?php esc_html_e( 'is the Fleet hub.', 'fleet-for-openstation' ); ?></strong>
+					<?php esc_html_e( 'Connected sites only need OpenStation; they do not install Fleet or an agent.', 'fleet-for-openstation' ); ?>
+				</p>
+			</div>
 
 			<?php self::render_notice( $notice ); ?>
 
-			<h2><?php esc_html_e( 'Connect a site', 'openstation-fleet' ); ?></h2>
+			<h2><?php esc_html_e( 'Connect a site', 'fleet-for-openstation' ); ?></h2>
 			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
 				<input type="hidden" name="action" value="openstation_fleet_connect">
 				<?php wp_nonce_field( 'openstation_fleet_connect' ); ?>
-				<label class="screen-reader-text" for="openstation-fleet-site-url"><?php esc_html_e( 'WordPress site URL', 'openstation-fleet' ); ?></label>
-				<input class="regular-text" id="openstation-fleet-site-url" name="site_url" type="url" inputmode="url" placeholder="https://example.com" required>
-				<?php submit_button( __( 'Connect site', 'openstation-fleet' ), 'primary', 'submit', false ); ?>
+				<label class="screen-reader-text" for="fleet-for-openstation-site-url"><?php esc_html_e( 'WordPress site URL', 'fleet-for-openstation' ); ?></label>
+				<input class="regular-text" id="fleet-for-openstation-site-url" name="site_url" type="url" inputmode="url" placeholder="https://example.com" required>
+				<?php submit_button( __( 'Connect site', 'fleet-for-openstation' ), 'primary', 'submit', false ); ?>
 			</form>
-			<p class="description"><?php esc_html_e( 'The site must use HTTPS and have Application Passwords enabled. You will approve access on that site.', 'openstation-fleet' ); ?></p>
+			<p class="description"><?php esc_html_e( 'The hub and client site must use HTTPS, and the client must have Application Passwords enabled. You will approve access on that site.', 'fleet-for-openstation' ); ?></p>
 
-			<h2><?php esc_html_e( 'Connected sites', 'openstation-fleet' ); ?></h2>
+			<h2><?php esc_html_e( 'Connected sites', 'fleet-for-openstation' ); ?></h2>
 			<?php if ( empty( $sites ) ) : ?>
-				<p><?php esc_html_e( 'No sites connected yet.', 'openstation-fleet' ); ?></p>
+				<p><?php esc_html_e( 'No sites connected yet.', 'fleet-for-openstation' ); ?></p>
 			<?php else : ?>
 				<table class="wp-list-table widefat fixed striped">
 					<thead>
 						<tr>
-							<th scope="col"><?php esc_html_e( 'Site', 'openstation-fleet' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'OpenStation', 'openstation-fleet' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Checked', 'openstation-fleet' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Actions', 'openstation-fleet' ); ?></th>
+							<th scope="col"><?php esc_html_e( 'Site', 'fleet-for-openstation' ); ?></th>
+							<th scope="col"><?php esc_html_e( 'OpenStation', 'fleet-for-openstation' ); ?></th>
+							<th scope="col"><?php esc_html_e( 'Checked', 'fleet-for-openstation' ); ?></th>
+							<th scope="col"><?php esc_html_e( 'Actions', 'fleet-for-openstation' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -102,16 +108,25 @@ final class OpenStation_Fleet {
 	 */
 	public static function handle_connect() {
 		self::guard_action( 'openstation_fleet_connect' );
+		if ( 'https' !== wp_parse_url( admin_url(), PHP_URL_SCHEME ) ) {
+			self::redirect( 'hub_https_required' );
+		}
 
 		$raw_url  = self::request_string( $_POST, 'site_url' );
 		$site_url = self::normalize_site_url( $raw_url );
 		if ( is_wp_error( $site_url ) ) {
 			self::redirect( 'invalid_url' );
 		}
+		if ( self::is_hub_site( $site_url ) ) {
+			self::redirect( 'self_site' );
+		}
 
 		$discovery = self::discover_site( $site_url );
 		if ( is_wp_error( $discovery ) ) {
 			self::redirect( 'discovery_failed' );
+		}
+		if ( self::is_hub_site( $discovery['site_url'] ) ) {
+			self::redirect( 'self_site' );
 		}
 
 		$state = wp_generate_uuid4();
@@ -132,7 +147,7 @@ final class OpenStation_Fleet {
 		$reject   = add_query_arg( 'rejected', '1', $callback );
 		$app_name = sprintf(
 			/* translators: %s: hostname of the Fleet hub. */
-			__( 'OpenStation Fleet on %s', 'openstation-fleet' ),
+			__( 'Fleet for OpenStation on %s', 'fleet-for-openstation' ),
 			wp_parse_url( home_url(), PHP_URL_HOST )
 		);
 		$authorize = add_query_arg(
@@ -154,7 +169,7 @@ final class OpenStation_Fleet {
 	 */
 	public static function handle_authorized() {
 		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'openstation-fleet' ) );
+			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
 		}
 
 		$state = sanitize_text_field( self::request_string( $_GET, 'state' ) );
@@ -266,7 +281,7 @@ final class OpenStation_Fleet {
 			$result = self::remote_request(
 				$site,
 				'POST',
-				'wp/v2/plugins/' . rawurlencode( $status['plugin'] ),
+				'wp/v2/plugins/' . self::PLUGIN_REST_ID,
 				array( 'status' => 'active' )
 			);
 		}
@@ -328,7 +343,7 @@ final class OpenStation_Fleet {
 			isset( $parts['query'] ) ||
 			isset( $parts['fragment'] )
 		) {
-			return new WP_Error( 'openstation_fleet_invalid_url', __( 'Enter a public HTTPS site URL without query parameters or credentials.', 'openstation-fleet' ) );
+			return new WP_Error( 'openstation_fleet_invalid_url', __( 'Enter a public HTTPS site URL without query parameters or credentials.', 'fleet-for-openstation' ) );
 		}
 
 		$port = isset( $parts['port'] ) ? ':' . (int) $parts['port'] : '';
@@ -349,21 +364,19 @@ final class OpenStation_Fleet {
 			}
 			$file       = isset( $plugin['plugin'] ) ? (string) $plugin['plugin'] : '';
 			$textdomain = isset( $plugin['textdomain'] ) ? (string) $plugin['textdomain'] : '';
-			if ( self::PLUGIN_FILE !== $file && 'desktop-mode' !== $textdomain ) {
+			if ( self::PLUGIN_REST_ID !== $file && self::PLUGIN_REST_ID . '.php' !== $file && 'desktop-mode' !== $textdomain ) {
 				continue;
 			}
 
 			$remote_status = isset( $plugin['status'] ) ? (string) $plugin['status'] : 'inactive';
 			return array(
 				'status'  => in_array( $remote_status, array( 'active', 'network-active' ), true ) ? 'active' : 'inactive',
-				'plugin'  => $file ? $file : self::PLUGIN_FILE,
 				'version' => isset( $plugin['version'] ) ? (string) $plugin['version'] : '',
 			);
 		}
 
 		return array(
 			'status'  => 'missing',
-			'plugin'  => self::PLUGIN_FILE,
 			'version' => '',
 		);
 	}
@@ -416,7 +429,7 @@ final class OpenStation_Fleet {
 			);
 		}
 
-		return new WP_Error( 'openstation_fleet_discovery_failed', __( 'Could not discover Application Password support on that site.', 'openstation-fleet' ) );
+		return new WP_Error( 'openstation_fleet_discovery_failed', __( 'Could not discover Application Password support on that site.', 'fleet-for-openstation' ) );
 	}
 
 	/**
@@ -481,7 +494,7 @@ final class OpenStation_Fleet {
 				? wp_strip_all_tags( $data['message'] )
 				: sprintf(
 					/* translators: %d: HTTP status code. */
-					__( 'The remote site returned HTTP %d.', 'openstation-fleet' ),
+					__( 'The remote site returned HTTP %d.', 'fleet-for-openstation' ),
 					$code
 				);
 			return new WP_Error( 'openstation_fleet_remote_error', $message, array( 'status' => $code ) );
@@ -521,7 +534,7 @@ final class OpenStation_Fleet {
 	private static function seal_secret( $secret ) {
 		self::load_sodium();
 		if ( ! function_exists( 'sodium_crypto_secretbox' ) ) {
-			return new WP_Error( 'openstation_fleet_no_crypto', __( 'This server cannot securely store the Application Password.', 'openstation-fleet' ) );
+			return new WP_Error( 'openstation_fleet_no_crypto', __( 'This server cannot securely store the Application Password.', 'fleet-for-openstation' ) );
 		}
 
 		$nonce  = random_bytes( SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
@@ -538,19 +551,19 @@ final class OpenStation_Fleet {
 	private static function open_secret( $sealed ) {
 		self::load_sodium();
 		if ( ! function_exists( 'sodium_crypto_secretbox_open' ) || 0 !== strpos( $sealed, 'v1:' ) ) {
-			return new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'openstation-fleet' ) );
+			return new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'fleet-for-openstation' ) );
 		}
 
 		$payload = base64_decode( substr( $sealed, 3 ), true );
 		if ( false === $payload || strlen( $payload ) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES ) {
-			return new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'openstation-fleet' ) );
+			return new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'fleet-for-openstation' ) );
 		}
 
 		$nonce  = substr( $payload, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
 		$cipher = substr( $payload, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
 		$secret = sodium_crypto_secretbox_open( $cipher, $nonce, self::secret_key() );
 		return false === $secret
-			? new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'openstation-fleet' ) )
+			? new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'fleet-for-openstation' ) )
 			: $secret;
 	}
 
@@ -572,7 +585,7 @@ final class OpenStation_Fleet {
 	 * @return string
 	 */
 	private static function secret_key() {
-		return hash_hmac( 'sha256', 'openstation-fleet', wp_salt( 'auth' ), true );
+		return hash_hmac( 'sha256', 'fleet-for-openstation', wp_salt( 'auth' ), true );
 	}
 
 	/**
@@ -585,10 +598,10 @@ final class OpenStation_Fleet {
 		$status  = isset( $site['openstation']['status'] ) ? $site['openstation']['status'] : 'unknown';
 		$version = isset( $site['openstation']['version'] ) ? $site['openstation']['version'] : '';
 		$labels  = array(
-			'active'   => $version ? sprintf( __( 'Active — %s', 'openstation-fleet' ), $version ) : __( 'Active', 'openstation-fleet' ),
-			'inactive' => __( 'Installed, inactive', 'openstation-fleet' ),
-			'missing'  => __( 'Not installed', 'openstation-fleet' ),
-			'unknown'  => __( 'Not checked', 'openstation-fleet' ),
+			'active'   => $version ? sprintf( __( 'Active — %s', 'fleet-for-openstation' ), $version ) : __( 'Active', 'fleet-for-openstation' ),
+			'inactive' => __( 'Installed, inactive', 'fleet-for-openstation' ),
+			'missing'  => __( 'Not installed', 'fleet-for-openstation' ),
+			'unknown'  => __( 'Not checked', 'fleet-for-openstation' ),
 		);
 		?>
 		<tr>
@@ -597,17 +610,17 @@ final class OpenStation_Fleet {
 				<a href="<?php echo esc_url( $site['site_url'] ); ?>" target="_blank" rel="noreferrer"><?php echo esc_html( $site['site_url'] ); ?></a><br>
 				<span class="description"><?php echo esc_html( $site['user_login'] ); ?></span>
 				<?php if ( ! empty( $site['error'] ) ) : ?>
-					<p><strong><?php esc_html_e( 'Error:', 'openstation-fleet' ); ?></strong> <?php echo esc_html( $site['error'] ); ?></p>
+					<p><strong><?php esc_html_e( 'Error:', 'fleet-for-openstation' ); ?></strong> <?php echo esc_html( $site['error'] ); ?></p>
 				<?php endif; ?>
 			</td>
 			<td><?php echo esc_html( isset( $labels[ $status ] ) ? $labels[ $status ] : $labels['unknown'] ); ?></td>
-			<td><?php echo $site['last_checked'] ? esc_html( human_time_diff( $site['last_checked'], time() ) . ' ' . __( 'ago', 'openstation-fleet' ) ) : '&mdash;'; ?></td>
+			<td><?php echo $site['last_checked'] ? esc_html( human_time_diff( $site['last_checked'], time() ) . ' ' . __( 'ago', 'fleet-for-openstation' ) ) : '&mdash;'; ?></td>
 			<td>
-				<?php self::render_action_form( 'check', $id, __( 'Check', 'openstation-fleet' ) ); ?>
+				<?php self::render_action_form( 'check', $id, __( 'Check', 'fleet-for-openstation' ) ); ?>
 				<?php if ( 'active' !== $status ) : ?>
-					<?php self::render_action_form( 'install', $id, 'inactive' === $status ? __( 'Activate OpenStation', 'openstation-fleet' ) : __( 'Install OpenStation', 'openstation-fleet' ), 'primary' ); ?>
+					<?php self::render_action_form( 'install', $id, 'inactive' === $status ? __( 'Activate OpenStation', 'fleet-for-openstation' ) : __( 'Install OpenStation', 'fleet-for-openstation' ), 'primary' ); ?>
 				<?php endif; ?>
-				<?php self::render_action_form( 'disconnect', $id, __( 'Disconnect', 'openstation-fleet' ), 'link-delete' ); ?>
+				<?php self::render_action_form( 'disconnect', $id, __( 'Disconnect', 'fleet-for-openstation' ), 'link-delete' ); ?>
 			</td>
 		</tr>
 		<?php
@@ -639,21 +652,23 @@ final class OpenStation_Fleet {
 	 */
 	private static function render_notice( $code ) {
 		$messages = array(
-			'connected'              => array( 'success', __( 'Site connected.', 'openstation-fleet' ) ),
-			'checked'                => array( 'success', __( 'Site status refreshed.', 'openstation-fleet' ) ),
-			'installed'              => array( 'success', __( 'OpenStation installed and activated.', 'openstation-fleet' ) ),
-			'already_active'         => array( 'info', __( 'OpenStation is already active.', 'openstation-fleet' ) ),
-			'disconnected'           => array( 'success', __( 'Application Password revoked and site disconnected.', 'openstation-fleet' ) ),
-			'invalid_url'            => array( 'error', __( 'Enter a valid public HTTPS WordPress site URL.', 'openstation-fleet' ) ),
-			'discovery_failed'       => array( 'error', __( 'Fleet could not find an enabled Application Password authorization endpoint on that site.', 'openstation-fleet' ) ),
-			'authorization_failed'   => array( 'error', __( 'The authorization response was invalid.', 'openstation-fleet' ) ),
-			'authorization_expired'  => array( 'error', __( 'The authorization attempt expired. Try connecting again.', 'openstation-fleet' ) ),
-			'authorization_rejected' => array( 'warning', __( 'The site connection was not approved.', 'openstation-fleet' ) ),
-			'encryption_failed'      => array( 'error', __( 'This server could not securely store the credential.', 'openstation-fleet' ) ),
-			'credential_failed'      => array( 'error', __( 'WordPress issued a credential, but Fleet could not verify it. Check whether the server forwards Authorization headers.', 'openstation-fleet' ) ),
-			'check_failed'           => array( 'error', __( 'Fleet could not refresh that site.', 'openstation-fleet' ) ),
-			'install_failed'         => array( 'error', __( 'OpenStation could not be installed. Review the site error below.', 'openstation-fleet' ) ),
-			'disconnect_failed'      => array( 'error', __( 'Fleet could not revoke the remote Application Password, so the site remains connected.', 'openstation-fleet' ) ),
+			'connected'              => array( 'success', __( 'Site connected.', 'fleet-for-openstation' ) ),
+			'checked'                => array( 'success', __( 'Site status refreshed.', 'fleet-for-openstation' ) ),
+			'installed'              => array( 'success', __( 'OpenStation installed and activated.', 'fleet-for-openstation' ) ),
+			'already_active'         => array( 'info', __( 'OpenStation is already active.', 'fleet-for-openstation' ) ),
+			'disconnected'           => array( 'success', __( 'Application Password revoked and site disconnected.', 'fleet-for-openstation' ) ),
+			'invalid_url'            => array( 'error', __( 'Enter a valid public HTTPS WordPress site URL.', 'fleet-for-openstation' ) ),
+			'hub_https_required'     => array( 'error', __( 'The Fleet hub must use HTTPS so WordPress can return the Application Password securely.', 'fleet-for-openstation' ) ),
+			'self_site'              => array( 'warning', __( 'This site is the Fleet hub, so it cannot be connected to itself.', 'fleet-for-openstation' ) ),
+			'discovery_failed'       => array( 'error', __( 'Fleet could not find an enabled Application Password authorization endpoint on that site.', 'fleet-for-openstation' ) ),
+			'authorization_failed'   => array( 'error', __( 'The authorization response was invalid.', 'fleet-for-openstation' ) ),
+			'authorization_expired'  => array( 'error', __( 'The authorization attempt expired. Try connecting again.', 'fleet-for-openstation' ) ),
+			'authorization_rejected' => array( 'warning', __( 'The site connection was not approved.', 'fleet-for-openstation' ) ),
+			'encryption_failed'      => array( 'error', __( 'This server could not securely store the credential.', 'fleet-for-openstation' ) ),
+			'credential_failed'      => array( 'error', __( 'WordPress issued a credential, but Fleet could not verify it. Check whether the server forwards Authorization headers.', 'fleet-for-openstation' ) ),
+			'check_failed'           => array( 'error', __( 'Fleet could not refresh that site.', 'fleet-for-openstation' ) ),
+			'install_failed'         => array( 'error', __( 'OpenStation could not be installed. Review the site error below.', 'fleet-for-openstation' ) ),
+			'disconnect_failed'      => array( 'error', __( 'Fleet could not revoke the remote Application Password, so the site remains connected.', 'fleet-for-openstation' ) ),
 		);
 		if ( ! isset( $messages[ $code ] ) ) {
 			return;
@@ -670,7 +685,7 @@ final class OpenStation_Fleet {
 	 */
 	private static function guard_action( $nonce_action ) {
 		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'openstation-fleet' ) );
+			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
 		}
 		check_admin_referer( $nonce_action );
 	}
@@ -684,7 +699,7 @@ final class OpenStation_Fleet {
 		$id    = sanitize_key( self::request_string( $_POST, 'site_id' ) );
 		$sites = self::get_sites();
 		if ( '' === $id || ! isset( $sites[ $id ] ) || ! is_array( $sites[ $id ] ) ) {
-			wp_die( esc_html__( 'That Fleet site does not exist.', 'openstation-fleet' ) );
+			wp_die( esc_html__( 'That Fleet site does not exist.', 'fleet-for-openstation' ) );
 		}
 		return array( $id, $sites[ $id ], $sites );
 	}
@@ -766,6 +781,25 @@ final class OpenStation_Fleet {
 	 */
 	private static function is_same_origin_https_url( $candidate, $site_url ) {
 		return 0 === strpos( (string) $candidate, 'https://' ) && self::url_origin( $candidate ) === self::url_origin( $site_url );
+	}
+
+	/**
+	 * Check whether a URL is this WordPress installation.
+	 *
+	 * Exact URLs are compared so path-based multisite installations can still
+	 * connect sibling sites on the same host.
+	 *
+	 * @param string $candidate Normalized site URL.
+	 * @return bool
+	 */
+	private static function is_hub_site( $candidate ) {
+		foreach ( array( home_url(), site_url() ) as $local_url ) {
+			$local_url = self::normalize_site_url( $local_url );
+			if ( ! is_wp_error( $local_url ) && $candidate === $local_url ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

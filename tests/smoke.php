@@ -99,12 +99,19 @@ assert( 'active' === $active['status'] );
 $class  = new ReflectionClass( 'OpenStation_Fleet' );
 $seal   = $class->getMethod( 'seal_secret' );
 $open   = $class->getMethod( 'open_secret' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$seal->setAccessible( true );
+	$open->setAccessible( true );
+}
 $sealed = $seal->invoke( null, 'application-password' );
 assert( is_string( $sealed ) && 0 === strpos( $sealed, 'v1:' ) );
 assert( 'application-password' === $open->invoke( null, $sealed ) );
 assert( $open->invoke( null, $sealed . 'tampered' ) instanceof WP_Error );
 
 $api = $class->getMethod( 'api_url' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$api->setAccessible( true );
+}
 assert(
 	'https://example.com/wp-json/wp/v2/plugins/desktop-mode/desktop-mode' === $api->invoke(
 		null,
@@ -128,6 +135,9 @@ assert( '/wp/v2/plugins' === $plain_query['rest_route'] );
 assert( 'edit' === $plain_query['context'] );
 
 $is_hub = $class->getMethod( 'is_hub_site' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$is_hub->setAccessible( true );
+}
 assert( true === $is_hub->invoke( null, 'https://hub.example' ) );
 assert( true === $is_hub->invoke( null, 'https://hub.example/wp' ) );
 assert( false === $is_hub->invoke( null, 'https://hub.example/client' ) );

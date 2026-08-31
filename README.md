@@ -42,7 +42,7 @@ The managed site must have WordPress Application Passwords enabled and must be p
 
 ## Install Fleet
 
-1. Download `fleet-for-openstation.zip` from the [latest release](https://github.com/RegionallyFamous/fleet-for-openstation/releases/latest).
+1. Download `fleet-for-openstation.zip` from the [newest available release](https://github.com/RegionallyFamous/fleet-for-openstation/releases).
 2. On the site you want to use as the hub, install and activate [OpenStation](https://github.com/WordPress/openstation).
 3. Go to **Plugins → Add New Plugin → Upload Plugin**.
 4. Upload `fleet-for-openstation.zip`, then activate it.

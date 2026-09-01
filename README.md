@@ -33,6 +33,9 @@ The distinction is simple:
 - Adopt a regular WordPress site: after one approval, Fleet installs and activates OpenStation automatically.
 - Check or install OpenStation across a selection of sites with safe bulk actions.
 - See an attention queue built from connection failures, OpenStation status, Core Site Health checks, and WordPress versions.
+- Use **Fleet Inbox** to collect pending comments, drafts, posts awaiting review, scheduled posts, and existing health findings across every site.
+- Search content, media, comments, and users across the fleet without opening each site first.
+- Open a persistent client workspace that raises every site assigned to that client in its own OpenStation window.
 - Open each managed site in its own named OpenStation window, so two or more sites can stay open side by side without opening another wp-admin.
 - Change core site identity, timezone, and date settings.
 - Update post and page titles or publishing status.
@@ -45,6 +48,8 @@ The distinction is simple:
 - Disconnect from either side and revoke the connection.
 
 The focused tabs are the friendlier path for common jobs. The Explorer provides the complete API surface while dedicated Fleet interfaces grow. That includes Core routes for content types, taxonomies, revisions, navigation, templates, template parts, blocks, widgets, global styles, fonts, users, plugins, themes, settings, and Site Health when the selected site exposes them. Fleet cannot manage a feature that the managed site does not expose through the WordPress REST API.
+
+Fleet does not install a companion agent or register custom endpoints on managed sites. The Inbox, Search, and focused management screens use the Core REST routes each WordPress installation already advertises. Fleet uses Core's batch controller when available to keep multi-collection reads efficient.
 
 ## Before you start
 
@@ -74,6 +79,8 @@ Both sites must be publicly reachable over HTTPS. WordPress permissions still ap
 4. Review the native WordPress connection request and approve it.
 5. Fleet returns immediately to a visible setup screen while WordPress installs or activates OpenStation.
 6. Select **Manage**.
+
+![Fleet's guided connection panel explaining the native WordPress approval flow](assets/screenshots/connect-site.jpg)
 
 Fleet never asks you to type a WordPress password into Fleet. If the managed site asks for one, you are signing in directly to that WordPress installation before its native approval screen appears.
 
@@ -106,6 +113,20 @@ Use **Fleet** in a managed-site window to focus the hub without closing your rem
 The Explorer is the escape hatch for anything a site exposes through REST but Fleet does not yet have a dedicated screen for. It uses the approved WordPress account's permissions and shows the real response before you continue.
 
 ![Fleet's API Explorer running a live WordPress settings request](assets/screenshots/api-explorer.jpg)
+
+## Run the whole fleet
+
+**Inbox** is the agency work queue. It combines the latest cached Core collection counts with connection and Site Health findings. Fleet refreshes it during normal site checks and its existing 15-minute scheduled checks; select **Check now** whenever you need an immediate reading.
+
+![Fleet Inbox combining work and health findings from two connected WordPress sites](assets/screenshots/fleet-inbox.jpg)
+
+**Search** runs authenticated, read-only searches against existing Core content, page, media, comment, and user collections. Search all connected sites or narrow the request to one client. On fleets larger than 25 sites, choose a client to keep a live search focused and responsive.
+
+![Fleet search showing results returned by existing WordPress Core REST collections](assets/screenshots/fleet-search.jpg)
+
+**Workspaces** groups sites by the client name stored in their Agency profile. Select **Open workspace** to open or focus every site in that group as a separate OpenStation window. Existing windows retain their current section instead of being duplicated.
+
+![A client workspace ready to open two connected sites as independent OpenStation windows](assets/screenshots/client-workspaces.jpg)
 
 ## Disconnect a site
 

@@ -116,6 +116,27 @@
 		} );
 	}
 
+	document.querySelectorAll( '[data-fleet-open-workspace]' ).forEach( ( button ) => {
+		button.addEventListener( 'click', () => {
+			const workspace = button.closest( '.fleet-workspace-group' );
+			const links = workspace ? Array.from( workspace.querySelectorAll( '[data-fleet-workspace-links] a' ) ) : [];
+			let opened = 0;
+			links.forEach( ( link ) => {
+				if ( openOpenStationWindow( link ) ) {
+					opened += 1;
+				}
+			} );
+			if ( opened > 0 ) {
+				button.classList.add( 'is-complete' );
+				button.dataset.fleetOpenedCount = String( opened );
+				return;
+			}
+			if ( links[ 0 ] ) {
+				window.location.assign( links[ 0 ].href );
+			}
+		} );
+	} );
+
 	const setup = document.querySelector( '.fleet-setup' );
 	if ( ! setup ) {
 		return;

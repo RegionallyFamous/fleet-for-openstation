@@ -29,6 +29,14 @@ function sanitize_key( $key ) {
 	return preg_replace( '/[^a-z0-9_-]/', '', strtolower( (string) $key ) );
 }
 
+function wp_strip_all_tags( $text ) {
+	return strip_tags( (string) $text );
+}
+
+function wp_json_encode( $value ) {
+	return json_encode( $value );
+}
+
 function wp_parse_args( $args, $defaults = array() ) {
 	return array_merge( $defaults, is_array( $args ) ? $args : array() );
 }
@@ -163,12 +171,18 @@ $capabilities     = $class->getMethod( 'discover_capabilities' );
 $route_catalog    = $class->getMethod( 'api_route_catalog' );
 $site_window_id   = $class->getMethod( 'site_window_id' );
 $attention       = $class->getMethod( 'attention_reasons' );
+$normalize_inbox  = $class->getMethod( 'normalize_inbox_summary' );
+$collection       = $class->getMethod( 'collection_summary' );
+$normalize_search = $class->getMethod( 'normalize_search_results' );
 if ( PHP_VERSION_ID < 80100 ) {
 	$normalize_record->setAccessible( true );
 	$capabilities->setAccessible( true );
 	$route_catalog->setAccessible( true );
 	$site_window_id->setAccessible( true );
 	$attention->setAccessible( true );
+	$normalize_inbox->setAccessible( true );
+	$collection->setAccessible( true );
+	$normalize_search->setAccessible( true );
 }
 $record = $normalize_record->invoke(
 	null,
@@ -180,11 +194,14 @@ $record = $normalize_record->invoke(
 assert( 0 === $record['health_checked'] );
 assert( false === $record['agency']['favorite'] );
 assert( array() === $record['agency']['tags'] );
+assert( 0 === $record['inbox']['pending_comments']['count'] );
 
 $discovered = $capabilities->invoke(
 	null,
 	array(
 		'routes'     => array(
+			'/batch/v1'                                    => array(),
+			'/wp/v2/search'                                => array(),
 			'/wp/v2/posts'                                 => array(),
 			'/wp/v2/media'                                 => array(),
 			'/wp/v2/templates'                             => array(),
@@ -195,11 +212,13 @@ $discovered = $capabilities->invoke(
 	)
 );
 assert( true === $discovered['posts'] );
+assert( true === $discovered['batch'] );
+assert( true === $discovered['search'] );
 assert( false === $discovered['comments'] );
 assert( true === $discovered['site_health'] );
 assert( true === $discovered['templates'] );
 assert( true === $discovered['styles'] );
-assert( 5 === $discovered['route_count'] );
+assert( 7 === $discovered['route_count'] );
 
 $catalog = $route_catalog->invoke(
 	null,
@@ -238,6 +257,50 @@ $record['health'] = array(
 $reasons = $attention->invoke( null, $record );
 assert( 1 === count( $reasons ) );
 assert( 'loopback-requests' === $reasons[0][0] );
+
+$inbox = $normalize_inbox->invoke(
+	null,
+	array(
+		'checked'          => 123,
+		'pending_comments' => array(
+			'count' => 9,
+			'items' => array_fill( 0, 8, array( 'id' => 1 ) ),
+		),
+	)
+);
+assert( 123 === $inbox['checked'] );
+assert( 9 === $inbox['pending_comments']['count'] );
+assert( 5 === count( $inbox['pending_comments']['items'] ) );
+
+$summary = $collection->invoke(
+	null,
+	array(
+		'status'  => 200,
+		'headers' => array( 'X-WP-Total' => '17' ),
+		'body'    => array_fill( 0, 5, array( 'id' => 1 ) ),
+		'error'   => '',
+	)
+);
+assert( 17 === $summary['count'] );
+assert( 5 === count( $summary['items'] ) );
+
+$search_results = $normalize_search->invoke(
+	null,
+	array(
+		'content' => array( array( 'id' => 7, 'title' => 'Hello <em>world</em>', 'subtype' => 'post' ) ),
+		'posts'   => array( array( 'id' => 7, 'title' => array( 'rendered' => 'Hello world' ), 'status' => 'publish' ) ),
+		'pages'   => array( array( 'id' => 8, 'title' => array( 'rendered' => 'Agency notes' ), 'status' => 'draft' ) ),
+		'users'   => array( array( 'name' => 'Ada', 'roles' => array( 'editor' ) ) ),
+		'comments' => array( array( 'author_name' => 'Grace', 'content' => array( 'rendered' => '<p>Good post</p>' ) ) ),
+		'media'   => array( array( 'title' => array( 'rendered' => 'Photo' ), 'mime_type' => 'image/jpeg' ) ),
+	)
+);
+assert( 5 === count( $search_results ) );
+assert( 'Hello world' === $search_results[0]['title'] );
+assert( 'Agency notes' === $search_results[1]['title'] );
+assert( 'users' === $search_results[2]['section'] );
+assert( 'comments' === $search_results[3]['section'] );
+assert( 'media' === $search_results[4]['section'] );
 
 $authorization_url = $class->getMethod( 'authorization_url' );
 if ( PHP_VERSION_ID < 80100 ) {

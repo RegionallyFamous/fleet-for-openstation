@@ -3,7 +3,7 @@ Contributors: openstation
 Tags: openstation, multisite, agency, site management
 Requires at least: 6.5
 Requires PHP: 7.4
-Stable tag: 0.4.2
+Stable tag: 0.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,6 +19,8 @@ After approval, Fleet verifies the connection and installs or activates OpenStat
 
 Focused workspaces cover posts, pages, comments, media, users, plugins, and common Core settings. A live API Explorer lists every route the selected site advertises—including taxonomies, navigation, templates, blocks, widgets, global styles, fonts, themes, Site Health, and plugin routes—and can run any method the approved WordPress account is allowed to use.
 
+Fleet Inbox combines pending comments, drafts, posts awaiting review, scheduled posts, connection issues, and Core Site Health findings across the fleet. Live fleet search finds content, media, comments, and users. Client workspaces open every site assigned to one client as persistent OpenStation windows. These features use only existing WordPress Core REST collections and the Core batch controller; Fleet does not require a companion agent or custom managed-site endpoints.
+
 == Installation ==
 
 1. Install and activate OpenStation on the hub.
@@ -26,7 +28,25 @@ Focused workspaces cover posts, pages, comments, media, users, plugins, and comm
 3. Open Fleet and connect a public HTTPS WordPress site.
 4. Approve the native Application Password connection request on the managed site.
 
+== Screenshots ==
+
+1. The Fleet hub, network chart, filters, and connected-site manifest inside OpenStation.
+2. Fleet Inbox combining editorial work, moderation, scheduled posts, and Site Health findings.
+3. Live search across existing WordPress Core content, media, comments, and user collections.
+4. A named client workspace ready to open multiple independent managed-site windows.
+5. A managed WordPress site running inside its own focused OpenStation window.
+6. The API Explorer running a live WordPress Core settings request.
+7. Three independent Fleet windows open together in the OpenStation overview.
+8. The guided native WordPress connection flow.
+
 == Changelog ==
+
+= 0.5.0 =
+
+* Add a fleet-wide operations inbox for pending comments, editorial work, scheduled posts, connection issues, and Core Site Health findings.
+* Add live search across content, media, comments, and users using only existing WordPress REST collections.
+* Add persistent client workspaces that open every client site in its own OpenStation window.
+* Refine Fleet as a compact OpenStation-native operations console and replace the complete screenshot set.
 
 = 0.4.2 =
 

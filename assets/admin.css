@@ -3240,3 +3240,214 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 		text-align: left;
 	}
 }
+
+/* Alignment pass. WordPress Core gives headings, selects, and checkboxes
+ * slightly different intrinsic geometry. Normalize those primitives here so
+ * every Fleet view shares the same baselines and control rhythm. */
+.fleet-app h1,
+.fleet-app h2,
+.fleet-app h3 {
+	padding: 0;
+}
+
+.fleet-app h2 {
+	line-height: 1.2;
+}
+
+.fleet-app h3 {
+	line-height: 1.3;
+}
+
+.fleet-app small {
+	line-height: 1.35;
+}
+
+.fleet-app .button {
+	min-height: 40px;
+}
+
+.fleet-app input[type="text"],
+.fleet-app input[type="url"],
+.fleet-app input[type="email"],
+.fleet-app input[type="password"],
+.fleet-app input[type="search"],
+.fleet-app select {
+	height: 40px;
+	min-height: 40px;
+	margin-top: 0;
+	margin-bottom: 0;
+}
+
+.fleet-app input[type="checkbox"],
+.fleet-app input[type="radio"] {
+	flex: 0 0 auto;
+	margin: 0;
+}
+
+.fleet-commandbar .fleet-hero__copy > div,
+.fleet-workspace-title > div,
+.fleet-inbox-site > header > div > span:last-child,
+.fleet-search-site > header > div,
+.fleet-workspace-group > header > span:last-child {
+	min-width: 0;
+}
+
+.fleet-summary__item {
+	align-items: center;
+}
+
+.fleet-summary__item strong,
+.fleet-summary__item span,
+.fleet-summary__hub strong,
+.fleet-summary__hub small {
+	line-height: 1.2;
+}
+
+.fleet-connect-form {
+	align-items: end;
+}
+
+.fleet-connect-form__control > .dashicons,
+.fleet-filter-search .dashicons {
+	top: 50%;
+	transform: translateY(-50%);
+}
+
+.fleet-connect-form .button {
+	height: 40px;
+}
+
+.fleet-connect-steps li {
+	min-height: 64px;
+}
+
+.fleet-filters {
+	align-items: stretch;
+}
+
+.fleet-filters select,
+.fleet-filters input[type="search"],
+.fleet-filters .button,
+.fleet-favorite-filter,
+.fleet-filter-clear {
+	height: 36px;
+	min-height: 36px;
+}
+
+.fleet-favorite-filter {
+	padding: 0 4px;
+}
+
+.fleet-filter-clear {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.fleet-bulk-form select,
+.fleet-bulk-form .button {
+	height: 36px;
+	min-height: 36px;
+}
+
+.fleet-tabs {
+	width: 100%;
+}
+
+.fleet-tabs a {
+	flex: 1 1 0;
+	min-width: 0;
+	min-height: 36px;
+	padding-top: 0;
+	padding-bottom: 0;
+}
+
+.fleet-context-strip {
+	min-height: 40px;
+}
+
+.fleet-context-strip > span:last-child {
+	line-height: 1.4;
+}
+
+.fleet-inbox-summary strong {
+	line-height: 1.1;
+}
+
+.fleet-inbox-summary small,
+.fleet-inbox-site header small,
+.fleet-search-site header small,
+.fleet-site-work-count,
+.fleet-inbox-group strong,
+.fleet-inbox-group small,
+.fleet-search-items small,
+.fleet-workspace-group header small {
+	line-height: 1.35;
+}
+
+.fleet-search-items a:last-child:nth-child(odd) {
+	grid-column: 1 / -1;
+}
+
+.fleet-inbox-summary .dashicons {
+	align-self: center;
+}
+
+.fleet-inbox-site__actions .button {
+	height: 32px;
+	min-height: 32px;
+}
+
+.fleet-global-search > label,
+.fleet-global-search > select,
+.fleet-global-search > .button {
+	height: 40px;
+	min-height: 40px;
+}
+
+.fleet-global-search input[type="search"] {
+	height: 38px;
+	min-height: 38px;
+}
+
+.fleet-task-card strong,
+.fleet-task-card small,
+.fleet-plugin-card strong,
+.fleet-plugin-card small,
+.fleet-recent-item strong,
+.fleet-recent-item small {
+	line-height: 1.35;
+}
+
+.fleet-plugin-install .button,
+.fleet-upload-form .button,
+.fleet-content-row .button,
+.fleet-comment-card .button,
+.fleet-form-actions .button {
+	height: 40px;
+	min-height: 40px;
+}
+
+.fleet-content-row {
+	align-items: start;
+}
+
+.fleet-content-row label {
+	line-height: 1.3;
+}
+
+.fleet-content-row > .button {
+	margin-top: 22px;
+}
+
+@media (max-width: 720px) {
+	.fleet-tabs a {
+		flex: 0 0 auto;
+		min-width: 88px;
+	}
+
+	.fleet-favorite-filter,
+	.fleet-filter-clear {
+		justify-content: flex-start;
+	}
+}

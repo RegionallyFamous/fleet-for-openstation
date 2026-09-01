@@ -14,7 +14,7 @@ trap 'rm -rf "$stage_root"' EXIT
 mkdir -p "$stage_root/fleet-for-openstation/includes" "$stage_root/fleet-for-openstation/assets" dist
 cp fleet-for-openstation.php readme.txt LICENSE uninstall.php "$stage_root/fleet-for-openstation/"
 cp includes/class-fleet-for-openstation.php "$stage_root/fleet-for-openstation/includes/"
-cp assets/admin.css "$stage_root/fleet-for-openstation/assets/"
+cp assets/admin.css assets/admin.js "$stage_root/fleet-for-openstation/assets/"
 
 rm -f dist/fleet-for-openstation.zip
 ( cd "$stage_root" && zip -qr "$OLDPWD/dist/fleet-for-openstation.zip" fleet-for-openstation )

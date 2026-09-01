@@ -1,11 +1,21 @@
 # Fleet for OpenStation
 
-Manage all of your WordPress sites from one OpenStation window.
+Manage all of your WordPress sites from one OpenStation desktop.
 
-Fleet turns one OpenStation install into an agency hub. Connect a client site, select **Manage site**, and work on that site's content, plugins, settings, and REST APIs without opening its wp-admin.
+Fleet turns one OpenStation install into an agency hub. Connect a client site, select **Manage site**, and work on that site's content, comments, media, plugins, users, settings, and REST APIs without opening its wp-admin.
 
 > [!IMPORTANT]
 > Fleet is an early preview built for hands-on testing. It is not yet a replacement for a backup, monitoring, or security service.
+
+## See Fleet in action
+
+![The Fleet hub inside OpenStation, showing two connected WordPress sites](assets/screenshots/fleet-hub.jpg)
+
+*One OpenStation install becomes the control center for every connected site.*
+
+![OpenStation's window overview showing the Fleet hub and two managed WordPress sites open at once](assets/screenshots/multiple-sites.jpg)
+
+*Each site keeps its own window and workspace, so the hub and multiple client sites can stay open together.*
 
 ## Who Fleet is for
 
@@ -14,21 +24,27 @@ Fleet is for agencies, freelancers, and teams that look after more than one Word
 The distinction is simple:
 
 - **Hub:** OpenStation and Fleet for OpenStation are active.
-- **Managed site:** OpenStation is active and has approved that hub's connection. Fleet itself is not installed there.
+- **Managed site:** A WordPress site that approved the hub's connection. Fleet installs or activates OpenStation there automatically.
 
 ## What you can do
 
-- Connect an OpenStation site with a revocable OAuth approval—no normal WordPress password is shared.
+- Connect a WordPress site with its native, revocable Application Password approval—no normal WordPress password is shared.
 - See whether OpenStation is missing, inactive, or active.
-- Install or activate OpenStation with one button when a site does not have it yet.
-- Manage the selected site inside the current Fleet window instead of opening another wp-admin.
+- Adopt a regular WordPress site: after one approval, Fleet installs and activates OpenStation automatically.
+- Check or install OpenStation across a selection of sites with safe bulk actions.
+- See an attention queue built from connection failures, OpenStation status, Core Site Health checks, and WordPress versions.
+- Open each managed site in its own named OpenStation window, so two or more sites can stay open side by side without opening another wp-admin.
 - Change core site identity, timezone, and date settings.
 - Update post and page titles or publishing status.
-- Activate and deactivate installed plugins.
-- Use the **Full API** console for any WordPress REST route the connected account is allowed to access, including routes added by plugins.
+- Moderate comments and update or upload Media Library items.
+- Install WordPress.org plugins and activate or deactivate installed plugins.
+- Create users and update their display name, email, and role.
+- Organize sites by client, tag, plan status, notes, and favorites; then search or filter the fleet.
+- Review a private history of Fleet actions.
+- Browse a live, searchable **Explorer** of every REST route the site advertises, then run allowed GET, POST, PUT, PATCH, or DELETE requests without knowing the route in advance.
 - Disconnect from either side and revoke the connection.
 
-The focused tabs are the friendlier path for common jobs. The API console provides the complete API surface while dedicated Fleet interfaces grow. Fleet cannot manage a feature that the managed site does not expose through the WordPress REST API.
+The focused tabs are the friendlier path for common jobs. The Explorer provides the complete API surface while dedicated Fleet interfaces grow. That includes Core routes for content types, taxonomies, revisions, navigation, templates, template parts, blocks, widgets, global styles, fonts, users, plugins, themes, settings, and Site Health when the selected site exposes them. Fleet cannot manage a feature that the managed site does not expose through the WordPress REST API.
 
 ## Before you start
 
@@ -37,7 +53,7 @@ The focused tabs are the friendlier path for common jobs. The API console provid
 | WordPress | 6.5 or newer | 6.0 or newer |
 | PHP | 7.4 or newer | Whatever the installed OpenStation release requires |
 | HTTPS | Required | Required |
-| Plugins | OpenStation and Fleet for OpenStation | OpenStation |
+| Plugins | OpenStation and Fleet for OpenStation | None required before connecting |
 | Access | Administrator | An administrator allowed to perform the work Fleet will do |
 
 Both sites must be publicly reachable over HTTPS. WordPress permissions still apply to every remote request: Fleet can do only what the account that approved the connection can do.
@@ -53,40 +69,51 @@ Both sites must be publicly reachable over HTTPS. WordPress permissions still ap
 ## Connect your first site
 
 1. Enter the managed site's full HTTPS address, such as `https://client.example`.
-2. Select **Connect site**.
+2. Select **Continue on site**.
 3. Sign in to that site if WordPress asks.
-4. Review **Full API access**, then select **Connect Fleet**.
-5. Back in Fleet, select **Manage site**.
+4. Review the native WordPress connection request and approve it.
+5. Fleet returns immediately to a visible setup screen while WordPress installs or activates OpenStation.
+6. Select **Manage**.
 
-OpenStation uses OAuth Authorization Code with PKCE, short-lived access tokens, and rotating refresh tokens. Fleet never asks for or stores the person's normal WordPress password.
+Fleet never asks you to type a WordPress password into Fleet. If the managed site asks for one, you are signing in directly to that WordPress installation before its native approval screen appears.
 
-### If OpenStation is not installed yet
+### Why WordPress calls it an Application Password
 
-Fleet cannot offer OpenStation OAuth before OpenStation exists. It can use WordPress Core's Application Password approval as a bootstrap connection, then install and activate OpenStation through the Core Plugins API. After installation, disconnect that bootstrap connection and connect the site again to use OAuth.
+An Application Password is a separate credential generated by WordPress for one integration. It is not the administrator's normal password. Fleet stores it encrypted on the hub and sends it only to that site's HTTPS REST API. The connection can be revoked without changing the administrator's sign-in password.
+
+If automatic OpenStation installation is unavailable on the host, Fleet keeps the working WordPress connection and shows **Finish OpenStation setup** on the site card. You can retry without reconnecting.
 
 ## Manage a connected site
 
-Select **Manage site** on a connected-site card. Fleet keeps the current window and changes its context to the managed site. The window header always names the site being controlled.
+Select **Manage** on a connected-site card. Fleet opens a stable OpenStation window named for that site. Opening the same site again focuses its existing window and preserves where you were; opening another site creates another window, so both remote contexts can remain on the desktop at once. The window header and context strip always name the site being controlled.
 
-The workspace has five tabs:
+The workspace shows only the tabs that the managed site advertises through its REST API:
 
-- **Overview** shows live site details and recent content.
+- **Overview** shows live site details, attention items, Core Site Health, and recent content.
 - **Content** edits recent posts and pages.
-- **Plugins** manages installed plugin status.
+- **Media** uploads files and edits Media Library details.
+- **Comments** moderates recent comments.
+- **Plugins** installs WordPress.org plugins and manages installed plugin status.
+- **Users** creates users and edits names, email addresses, and roles.
 - **Settings** changes common Core settings.
-- **API** sends GET, POST, PUT, PATCH, or DELETE requests to any available REST route.
+- **Agency** stores client details, tags, plan status, private notes, and favorite status on the hub.
+- **Explorer** lists every route currently advertised by WordPress Core and plugins, shows supported methods, filters the inventory, and sends GET, POST, PUT, PATCH, or DELETE requests.
 
-Use **All sites** to return to the hub list. The Fleet window is deliberately capped and centered in OpenStation instead of filling the desktop.
+Use **Fleet** in a managed-site window to focus the hub without closing your remote workspace. Fleet windows are deliberately capped and centered in OpenStation instead of filling the desktop.
+
+![A managed WordPress site open in its own focused OpenStation window](assets/screenshots/managed-site.jpg)
+
+The Explorer is the escape hatch for anything a site exposes through REST but Fleet does not yet have a dedicated screen for. It uses the approved WordPress account's permissions and shows the real response before you continue.
+
+![Fleet's API Explorer running a live WordPress settings request](assets/screenshots/api-explorer.jpg)
 
 ## Disconnect a site
 
-Select **Disconnect** next to the site. OAuth connections revoke their refresh-token grant before Fleet removes the local record. A managed-site administrator can also revoke a hub under **Users → Profile → Fleet connections**.
+Select **Disconnect** next to the site. Fleet revokes that exact Application Password before removing the local record. A managed-site administrator can also revoke it under **Users → Profile → Application Passwords**. Disconnect every site before uninstalling Fleet; uninstalling a hub plugin cannot reliably contact every managed site.
 
-For a bootstrap Application Password, Fleet revokes that exact credential before removing the site. Disconnect every site before uninstalling Fleet; uninstalling a hub plugin cannot reliably contact every managed site.
+## What Fleet deliberately leaves to other tools
 
-## What Fleet does not do yet
-
-Fleet does not yet include bulk actions, background jobs, backups, restores, uptime monitoring, security scanning, client reports, or shared team vaults. Those are separate product decisions, not hidden behind the API console.
+Fleet does not replace backups, restores, uptime monitoring, malware scanning, or a shared secrets vault. Its job is WordPress management through WordPress APIs, inside OpenStation.
 
 ## Need help?
 

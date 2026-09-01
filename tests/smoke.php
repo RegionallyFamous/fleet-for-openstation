@@ -21,6 +21,22 @@ function __( $text ) {
 	return $text;
 }
 
+function sanitize_text_field( $text ) {
+	return trim( strip_tags( (string) $text ) );
+}
+
+function sanitize_key( $key ) {
+	return preg_replace( '/[^a-z0-9_-]/', '', strtolower( (string) $key ) );
+}
+
+function wp_parse_args( $args, $defaults = array() ) {
+	return array_merge( $defaults, is_array( $args ) ? $args : array() );
+}
+
+function get_bloginfo( $show ) {
+	return 'version' === $show ? '6.8.2' : '';
+}
+
 function untrailingslashit( $value ) {
 	return rtrim( $value, '/\\' );
 }
@@ -141,6 +157,87 @@ if ( PHP_VERSION_ID < 80100 ) {
 assert( true === $is_hub->invoke( null, 'https://hub.example' ) );
 assert( true === $is_hub->invoke( null, 'https://hub.example/wp' ) );
 assert( false === $is_hub->invoke( null, 'https://hub.example/client' ) );
+
+$normalize_record = $class->getMethod( 'normalize_site_record' );
+$capabilities     = $class->getMethod( 'discover_capabilities' );
+$route_catalog    = $class->getMethod( 'api_route_catalog' );
+$site_window_id   = $class->getMethod( 'site_window_id' );
+$attention       = $class->getMethod( 'attention_reasons' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$normalize_record->setAccessible( true );
+	$capabilities->setAccessible( true );
+	$route_catalog->setAccessible( true );
+	$site_window_id->setAccessible( true );
+	$attention->setAccessible( true );
+}
+$record = $normalize_record->invoke(
+	null,
+	array(
+		'name'        => 'Client site',
+		'openstation' => array( 'status' => 'active' ),
+	)
+);
+assert( 0 === $record['health_checked'] );
+assert( false === $record['agency']['favorite'] );
+assert( array() === $record['agency']['tags'] );
+
+$discovered = $capabilities->invoke(
+	null,
+	array(
+		'routes'     => array(
+			'/wp/v2/posts'                                 => array(),
+			'/wp/v2/media'                                 => array(),
+			'/wp/v2/templates'                             => array(),
+			'/wp/v2/global-styles/(?P<id>[\\d]+)'         => array(),
+			'/wp-site-health/v1/tests/background-updates' => array(),
+		),
+		'namespaces' => array( 'wp/v2', 'wp-site-health/v1' ),
+	)
+);
+assert( true === $discovered['posts'] );
+assert( false === $discovered['comments'] );
+assert( true === $discovered['site_health'] );
+assert( true === $discovered['templates'] );
+assert( true === $discovered['styles'] );
+assert( 5 === $discovered['route_count'] );
+
+$catalog = $route_catalog->invoke(
+	null,
+	array(
+		'routes' => array(
+			'/wp/v2/posts' => array(
+				'namespace' => 'wp/v2',
+				'methods'   => array( 'GET', 'POST' ),
+				'endpoints' => array(
+					array(
+						'methods' => array( 'GET' ),
+						'args'    => array( 'page' => array(), 'search' => array() ),
+					),
+				),
+			),
+			'/plugin/v1/run' => array(
+				'namespace' => 'plugin/v1',
+				'methods'   => array( 'POST', 'OPTIONS' ),
+				'endpoints' => array(),
+			),
+		),
+	)
+);
+assert( 2 === count( $catalog ) );
+assert( '/plugin/v1/run' === $catalog[0]['route'] );
+assert( array( 'POST' ) === $catalog[0]['methods'] );
+assert( 2 === $catalog[1]['arg_count'] );
+assert( 'fleet-site-abc-123' === $site_window_id->invoke( null, 'ABC-123' ) );
+
+$record['health'] = array(
+	'loopback-requests' => array(
+		'label'  => 'Loopback request failed',
+		'status' => 'recommended',
+	),
+);
+$reasons = $attention->invoke( null, $record );
+assert( 1 === count( $reasons ) );
+assert( 'loopback-requests' === $reasons[0][0] );
 
 $authorization_url = $class->getMethod( 'authorization_url' );
 if ( PHP_VERSION_ID < 80100 ) {

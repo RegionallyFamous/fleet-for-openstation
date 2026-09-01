@@ -3,28 +3,55 @@ Contributors: openstation
 Tags: openstation, multisite, agency, site management
 Requires at least: 6.5
 Requires PHP: 7.4
-Stable tag: 0.2.1
+Stable tag: 0.4.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Manage connected WordPress sites inside OpenStation using OAuth and WordPress REST APIs.
+Manage connected WordPress sites inside OpenStation using Core Application Passwords and WordPress REST APIs.
 
 == Description ==
 
-Fleet for OpenStation turns one OpenStation install into an agency hub. Connect another OpenStation site through a revocable OAuth approval, then manage that site's content, plugins, settings, and any REST API route without opening another wp-admin.
+Fleet for OpenStation turns one OpenStation install into an agency hub. Connect another WordPress site through Core's revocable Application Password approval, then manage that site's content, plugins, settings, and any REST API route without opening another wp-admin. Every managed site gets a stable, named OpenStation window, so multiple sites can stay open at the same time.
 
-OAuth uses Authorization Code with PKCE, short-lived access tokens, and rotating refresh tokens. Tokens are encrypted at rest on the hub. WordPress capability checks remain authoritative for every request.
+Fleet never asks for the administrator's normal password. WordPress generates a separate Application Password for Fleet, and Fleet encrypts it at rest on the hub. WordPress capability checks remain authoritative for every request.
 
-If a managed site does not have OpenStation yet, Fleet can use a WordPress Core Application Password as a bootstrap connection and install OpenStation through the Core Plugins API. Disconnect and reconnect after installation to switch that site to OAuth.
+After approval, Fleet verifies the connection and installs or activates OpenStation automatically through the Core Plugins API. If installation fails, the WordPress connection remains available so the user can retry without reconnecting.
+
+Focused workspaces cover posts, pages, comments, media, users, plugins, and common Core settings. A live API Explorer lists every route the selected site advertises—including taxonomies, navigation, templates, blocks, widgets, global styles, fonts, themes, Site Health, and plugin routes—and can run any method the approved WordPress account is allowed to use.
 
 == Installation ==
 
 1. Install and activate OpenStation on the hub.
 2. Upload and activate Fleet for OpenStation.
 3. Open Fleet and connect a public HTTPS WordPress site.
-4. Approve the Full API access request on the managed site.
+4. Approve the native Application Password connection request on the managed site.
 
 == Changelog ==
+
+= 0.4.2 =
+
+* Raise the Fleet hub reliably when returning from a managed-site workspace.
+
+= 0.4.1 =
+
+* Keep the Fleet hub in place when opening a managed-site window and make the workspace back action reliably focus the hub.
+
+= 0.4.0 =
+
+* Open each managed site in its own stable OpenStation window so multiple remote sites can stay open together.
+* Keep navigation inside the selected site's window and make the Fleet back action focus the hub.
+* Add a live, searchable API Explorer for every Core and plugin REST route advertised by the managed site.
+* Expand capability discovery across content types, taxonomies, navigation, widgets, templates, patterns, blocks, styles, fonts, and statuses.
+
+= 0.3.0 =
+
+* Add an attention queue, Core Site Health summaries, WordPress version checks, and 15-minute background refreshes.
+* Add safe bulk status checks and OpenStation install or activation actions.
+* Add client names, tags, plan status, private notes, favorites, search, and filters.
+* Add focused management for comments, media, users, and WordPress.org plugin installation.
+* Add a private Fleet activity history and capability-aware workspace navigation.
+* Make connection a single approval flow that automatically installs or activates OpenStation.
+* Return connection authentication to WordPress Core Application Passwords.
 
 = 0.2.1 =
 

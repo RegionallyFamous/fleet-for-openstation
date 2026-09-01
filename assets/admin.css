@@ -1731,7 +1731,6 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 }
 
 .fleet-manage-button {
-	min-height: 34px !important;
 	padding: 0 11px !important;
 }
 
@@ -3241,9 +3240,10 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 	}
 }
 
-/* Alignment pass. WordPress Core gives headings, selects, and checkboxes
- * slightly different intrinsic geometry. Normalize those primitives here so
- * every Fleet view shares the same baselines and control rhythm. */
+/* Alignment pass. WordPress Core gives links, buttons, summaries, selects,
+ * and icon fonts different intrinsic geometry. Fleet uses one control box
+ * contract with explicit compact variants so both the boxes and their visible
+ * contents share the same optical center. */
 .fleet-app h1,
 .fleet-app h2,
 .fleet-app h3 {
@@ -3262,8 +3262,26 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 	line-height: 1.35;
 }
 
+.fleet-app {
+	--fleet-control-size: 40px;
+}
+
 .fleet-app .button {
-	min-height: 40px;
+	box-sizing: border-box;
+	height: var(--fleet-control-size);
+	min-height: var(--fleet-control-size);
+	padding-block: 0 1px;
+	vertical-align: middle;
+}
+
+.fleet-app .button > .dashicons {
+	display: block;
+	flex: 0 0 16px;
+	width: 16px;
+	height: 16px;
+	font-size: 16px;
+	line-height: 16px;
+	transform: translateY(-1px);
 }
 
 .fleet-app input[type="text"],
@@ -3313,25 +3331,21 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 	transform: translateY(-50%);
 }
 
-.fleet-connect-form .button {
-	height: 40px;
-}
-
 .fleet-connect-steps li {
 	min-height: 64px;
 }
 
 .fleet-filters {
+	--fleet-control-size: 36px;
 	align-items: stretch;
 }
 
 .fleet-filters select,
 .fleet-filters input[type="search"],
-.fleet-filters .button,
 .fleet-favorite-filter,
 .fleet-filter-clear {
-	height: 36px;
-	min-height: 36px;
+	height: var(--fleet-control-size);
+	min-height: var(--fleet-control-size);
 }
 
 .fleet-favorite-filter {
@@ -3344,10 +3358,13 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 	justify-content: center;
 }
 
-.fleet-bulk-form select,
-.fleet-bulk-form .button {
-	height: 36px;
-	min-height: 36px;
+.fleet-bulk-form {
+	--fleet-control-size: 36px;
+}
+
+.fleet-bulk-form select {
+	height: var(--fleet-control-size);
+	min-height: var(--fleet-control-size);
 }
 
 .fleet-tabs {
@@ -3393,16 +3410,18 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 	align-self: center;
 }
 
-.fleet-inbox-site__actions .button {
-	height: 32px;
-	min-height: 32px;
+.fleet-site-card__actions {
+	--fleet-control-size: 34px;
+}
+
+.fleet-inbox-site__actions {
+	--fleet-control-size: 32px;
 }
 
 .fleet-global-search > label,
-.fleet-global-search > select,
-.fleet-global-search > .button {
-	height: 40px;
-	min-height: 40px;
+.fleet-global-search > select {
+	height: var(--fleet-control-size);
+	min-height: var(--fleet-control-size);
 }
 
 .fleet-global-search input[type="search"] {
@@ -3417,15 +3436,6 @@ body.toplevel_page_fleet-for-openstation #wpbody-content {
 .fleet-recent-item strong,
 .fleet-recent-item small {
 	line-height: 1.35;
-}
-
-.fleet-plugin-install .button,
-.fleet-upload-form .button,
-.fleet-content-row .button,
-.fleet-comment-card .button,
-.fleet-form-actions .button {
-	height: 40px;
-	min-height: 40px;
 }
 
 .fleet-content-row {

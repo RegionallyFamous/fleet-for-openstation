@@ -3,7 +3,7 @@ Contributors: openstation
 Tags: openstation, multisite, agency, site management
 Requires at least: 6.5
 Requires PHP: 7.4
-Stable tag: 0.2.0
+Stable tag: 0.2.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -25,6 +25,11 @@ If a managed site does not have OpenStation yet, Fleet can use a WordPress Core 
 4. Approve the Full API access request on the managed site.
 
 == Changelog ==
+
+= 0.2.1 =
+
+* Redesign the hub as a compact OpenStation fleet map and site manifest.
+* Make the remote-site context and management navigation clearer.
 
 = 0.2.0 =
 * Add OAuth Authorization Code with PKCE, short-lived access tokens, rotating refresh tokens, and two-sided revocation.

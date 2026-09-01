@@ -102,26 +102,47 @@ final class OpenStation_Fleet {
 				++$ready_count;
 			}
 		}
+		$attention_count = max( 0, count( $sites ) - $ready_count );
 		?>
 		<div class="wrap fleet-app">
-			<header class="fleet-hero">
+			<header class="fleet-commandbar">
 				<div class="fleet-hero__copy">
-					<span class="fleet-eyebrow"><?php esc_html_e( 'OpenStation agency tools', 'fleet-for-openstation' ); ?></span>
-					<h1><?php esc_html_e( 'Fleet', 'fleet-for-openstation' ); ?></h1>
-					<p><?php esc_html_e( 'Connect your WordPress sites, then manage each one without leaving this window.', 'fleet-for-openstation' ); ?></p>
+					<span class="fleet-product-mark" aria-hidden="true"><span class="dashicons dashicons-networking"></span></span>
+					<div>
+						<span class="fleet-eyebrow"><?php esc_html_e( 'OpenStation agency tools', 'fleet-for-openstation' ); ?></span>
+						<h1><?php esc_html_e( 'Fleet', 'fleet-for-openstation' ); ?></h1>
+						<p><?php esc_html_e( 'Manage every WordPress site from one station.', 'fleet-for-openstation' ); ?></p>
+					</div>
 				</div>
-				<div class="fleet-hub-card">
-					<span class="fleet-status-dot" aria-hidden="true"></span>
-					<span>
-						<strong><?php esc_html_e( 'Fleet hub', 'fleet-for-openstation' ); ?></strong>
-						<small><?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?></small>
-					</span>
-				</div>
+				<details class="fleet-connect-popover">
+					<summary class="button button-primary"><span class="dashicons dashicons-plus-alt2" aria-hidden="true"></span><?php esc_html_e( 'Connect site', 'fleet-for-openstation' ); ?></summary>
+					<div class="fleet-connect-popover__body">
+						<div>
+							<span class="fleet-eyebrow"><?php esc_html_e( 'New connection', 'fleet-for-openstation' ); ?></span>
+							<h2><?php esc_html_e( 'Add a WordPress site', 'fleet-for-openstation' ); ?></h2>
+							<p><?php esc_html_e( 'Approve a secure, revocable OAuth connection on the site you want to manage.', 'fleet-for-openstation' ); ?></p>
+						</div>
+						<form class="fleet-connect-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post" target="_top">
+							<input type="hidden" name="action" value="openstation_fleet_connect">
+							<?php wp_nonce_field( 'openstation_fleet_connect' ); ?>
+							<label for="fleet-for-openstation-site-url"><?php esc_html_e( 'WordPress site URL', 'fleet-for-openstation' ); ?></label>
+							<div class="fleet-connect-form__control">
+								<span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span>
+								<input id="fleet-for-openstation-site-url" name="site_url" type="url" inputmode="url" placeholder="https://example.com" required>
+							</div>
+							<button class="button button-primary" type="submit"><?php esc_html_e( 'Connect', 'fleet-for-openstation' ); ?></button>
+						</form>
+					</div>
+				</details>
 			</header>
 
 			<?php self::render_notice( $notice ); ?>
 
 			<div class="fleet-summary" role="list" aria-label="<?php esc_attr_e( 'Fleet summary', 'fleet-for-openstation' ); ?>">
+				<div class="fleet-summary__hub" role="listitem">
+					<span class="fleet-status-dot" aria-hidden="true"></span>
+					<span><strong><?php esc_html_e( 'Fleet hub', 'fleet-for-openstation' ); ?></strong><small><?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?></small></span>
+				</div>
 				<div class="fleet-summary__item" role="listitem">
 					<strong><?php echo esc_html( count( $sites ) ); ?></strong>
 					<span><?php esc_html_e( 'Connected sites', 'fleet-for-openstation' ); ?></span>
@@ -130,51 +151,92 @@ final class OpenStation_Fleet {
 					<strong><?php echo esc_html( $ready_count ); ?></strong>
 					<span><?php esc_html_e( 'OpenStation ready', 'fleet-for-openstation' ); ?></span>
 				</div>
-				<div class="fleet-summary__item" role="listitem">
-					<strong><?php esc_html_e( 'OAuth', 'fleet-for-openstation' ); ?></strong>
-					<span><?php esc_html_e( 'Preferred connection', 'fleet-for-openstation' ); ?></span>
+				<div class="fleet-summary__item fleet-summary__item--attention" role="listitem">
+					<strong><?php echo esc_html( $attention_count ); ?></strong>
+					<span><?php esc_html_e( 'Need attention', 'fleet-for-openstation' ); ?></span>
 				</div>
 			</div>
 
-			<section class="fleet-panel fleet-connect-panel" aria-labelledby="fleet-connect-title">
-				<div class="fleet-panel__heading">
-					<div>
-						<h2 id="fleet-connect-title"><?php esc_html_e( 'Add a WordPress site', 'fleet-for-openstation' ); ?></h2>
-						<p><?php esc_html_e( 'Approve a secure, revocable OAuth connection on the site you want to manage.', 'fleet-for-openstation' ); ?></p>
+			<section class="fleet-board" aria-labelledby="fleet-sites-title">
+				<?php self::render_network_map( $sites ); ?>
+				<div class="fleet-manifest">
+					<div class="fleet-section-heading">
+						<div>
+							<span class="fleet-eyebrow"><?php esc_html_e( 'Site manifest', 'fleet-for-openstation' ); ?></span>
+							<h2 id="fleet-sites-title"><?php esc_html_e( 'Connected sites', 'fleet-for-openstation' ); ?></h2>
+						</div>
+						<span class="fleet-count"><?php echo esc_html( count( $sites ) ); ?></span>
 					</div>
+					<?php if ( empty( $sites ) ) : ?>
+						<div class="fleet-empty">
+							<span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span>
+							<h3><?php esc_html_e( 'Your fleet starts here', 'fleet-for-openstation' ); ?></h3>
+							<p><?php esc_html_e( 'Use Connect site to open your first remote management workspace.', 'fleet-for-openstation' ); ?></p>
+						</div>
+					<?php else : ?>
+						<div class="fleet-site-list">
+							<?php foreach ( $sites as $id => $site ) : ?>
+								<?php self::render_site_card( (string) $id, $site ); ?>
+							<?php endforeach; ?>
+						</div>
+					<?php endif; ?>
 				</div>
-				<form class="fleet-connect-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post" target="_top">
-					<input type="hidden" name="action" value="openstation_fleet_connect">
-					<?php wp_nonce_field( 'openstation_fleet_connect' ); ?>
-					<label class="screen-reader-text" for="fleet-for-openstation-site-url"><?php esc_html_e( 'WordPress site URL', 'fleet-for-openstation' ); ?></label>
-					<span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span>
-					<input id="fleet-for-openstation-site-url" name="site_url" type="url" inputmode="url" placeholder="https://example.com" required>
-					<button class="button button-primary" type="submit"><?php esc_html_e( 'Connect site', 'fleet-for-openstation' ); ?></button>
-				</form>
 			</section>
+		</div>
+		<?php
+	}
 
-			<section class="fleet-sites" aria-labelledby="fleet-sites-title">
-				<div class="fleet-section-heading">
-					<div>
-						<span class="fleet-eyebrow"><?php esc_html_e( 'Your network', 'fleet-for-openstation' ); ?></span>
-						<h2 id="fleet-sites-title"><?php esc_html_e( 'Connected sites', 'fleet-for-openstation' ); ?></h2>
-					</div>
-					<span class="fleet-count"><?php echo esc_html( count( $sites ) ); ?></span>
+	/**
+	 * Render a compact visual map of the hub and the first five connected sites.
+	 *
+	 * @param array $sites Connected site records.
+	 */
+	private static function render_network_map( $sites ) {
+		$positions = array(
+			array( 50, 13 ),
+			array( 83, 39 ),
+			array( 70, 80 ),
+			array( 30, 80 ),
+			array( 17, 39 ),
+		);
+		$map_sites = array_slice( $sites, 0, count( $positions ), true );
+		?>
+		<div class="fleet-map" aria-label="<?php esc_attr_e( 'Fleet network chart', 'fleet-for-openstation' ); ?>">
+			<div class="fleet-map__heading">
+				<span class="fleet-eyebrow"><?php esc_html_e( 'Network chart', 'fleet-for-openstation' ); ?></span>
+				<span class="fleet-map__legend"><span class="fleet-status-dot" aria-hidden="true"></span><?php esc_html_e( 'Hub online', 'fleet-for-openstation' ); ?></span>
+			</div>
+			<div class="fleet-map__canvas">
+				<svg class="fleet-map__lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+					<?php $map_index = 0; ?>
+					<?php foreach ( $map_sites as $site ) : ?>
+						<line x1="50" y1="50" x2="<?php echo esc_attr( $positions[ $map_index ][0] ); ?>" y2="<?php echo esc_attr( $positions[ $map_index ][1] ); ?>"></line>
+						<?php ++$map_index; ?>
+					<?php endforeach; ?>
+				</svg>
+				<div class="fleet-map__hub">
+					<span class="dashicons dashicons-networking" aria-hidden="true"></span>
+					<strong><?php esc_html_e( 'Fleet hub', 'fleet-for-openstation' ); ?></strong>
 				</div>
-				<?php if ( empty( $sites ) ) : ?>
-					<div class="fleet-empty">
-						<span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span>
-						<h3><?php esc_html_e( 'Your fleet starts here', 'fleet-for-openstation' ); ?></h3>
-						<p><?php esc_html_e( 'Connect a site above to open its remote management workspace.', 'fleet-for-openstation' ); ?></p>
-					</div>
-				<?php else : ?>
-					<div class="fleet-site-list">
-						<?php foreach ( $sites as $id => $site ) : ?>
-							<?php self::render_site_card( (string) $id, $site ); ?>
-						<?php endforeach; ?>
-					</div>
+				<?php $map_index = 0; ?>
+				<?php foreach ( $map_sites as $id => $site ) : ?>
+					<?php
+					$status     = isset( $site['openstation']['status'] ) ? $site['openstation']['status'] : 'unknown';
+					$manage_url = add_query_arg( array( 'page' => self::MENU_SLUG, 'site_id' => (string) $id ), admin_url( 'admin.php' ) );
+					?>
+					<a class="fleet-map__site fleet-map__site--<?php echo esc_attr( $status ); ?>" style="--fleet-x: <?php echo esc_attr( $positions[ $map_index ][0] ); ?>%; --fleet-y: <?php echo esc_attr( $positions[ $map_index ][1] ); ?>%;" href="<?php echo esc_url( $manage_url ); ?>">
+						<span class="fleet-map__site-dot"><span class="fleet-status-dot" aria-hidden="true"></span></span>
+						<strong><?php echo esc_html( $site['name'] ); ?></strong>
+					</a>
+					<?php ++$map_index; ?>
+				<?php endforeach; ?>
+				<?php if ( empty( $map_sites ) ) : ?>
+					<p class="fleet-map__empty"><?php esc_html_e( 'Your connected sites will gather around this hub.', 'fleet-for-openstation' ); ?></p>
+				<?php elseif ( count( $sites ) > count( $map_sites ) ) : ?>
+					<span class="fleet-map__overflow"><?php printf( esc_html__( '+%d more', 'fleet-for-openstation' ), esc_html( count( $sites ) - count( $map_sites ) ) ); ?></span>
 				<?php endif; ?>
-			</section>
+			</div>
+			<p class="fleet-map__caption"><?php esc_html_e( 'Select a site to switch the entire window into its remote WordPress context.', 'fleet-for-openstation' ); ?></p>
 		</div>
 		<?php
 	}
@@ -1226,7 +1288,7 @@ final class OpenStation_Fleet {
 		?>
 		<article class="fleet-site-card">
 			<div class="fleet-site-card__identity">
-				<span class="fleet-site-icon"><span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span></span>
+				<span class="fleet-site-icon"><span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span><span class="fleet-site-icon__status fleet-site-icon__status--<?php echo esc_attr( $status ); ?>"></span></span>
 				<div>
 					<h3><?php echo esc_html( $site['name'] ); ?></h3>
 					<a href="<?php echo esc_url( $site['site_url'] ); ?>" target="_blank" rel="noreferrer"><?php echo esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ); ?><span class="dashicons dashicons-external" aria-hidden="true"></span></a>
@@ -1234,12 +1296,12 @@ final class OpenStation_Fleet {
 			</div>
 			<div class="fleet-site-card__state">
 				<span class="fleet-pill fleet-pill--<?php echo esc_attr( $status ); ?>"><span class="fleet-status-dot" aria-hidden="true"></span><?php echo esc_html( isset( $labels[ $status ] ) ? $labels[ $status ] : $labels['unknown'] ); ?></span>
-				<small>
+				<small class="fleet-site-card__checked">
 					<?php
 					if ( $site['last_checked'] ) {
 						printf(
 							/* translators: 1: human-readable time difference, 2: authentication type. */
-							esc_html__( 'Checked %1$s ago · %2$s', 'fleet-for-openstation' ),
+							esc_html__( '%1$s ago · %2$s', 'fleet-for-openstation' ),
 							esc_html( human_time_diff( $site['last_checked'], time() ) ),
 							esc_html( $auth_label )
 						);
@@ -1256,17 +1318,21 @@ final class OpenStation_Fleet {
 			<?php if ( ! empty( $site['error'] ) ) : ?>
 				<p class="fleet-site-error"><span class="dashicons dashicons-warning" aria-hidden="true"></span><?php echo esc_html( $site['error'] ); ?></p>
 			<?php endif; ?>
-			<p class="fleet-site-card__help"><?php esc_html_e( 'Manage this site through its authenticated WordPress APIs without opening another wp-admin.', 'fleet-for-openstation' ); ?></p>
 			<div class="fleet-site-card__actions">
 				<a class="button button-primary fleet-manage-button" href="<?php echo esc_url( $manage_url ); ?>">
-					<?php esc_html_e( 'Manage site', 'fleet-for-openstation' ); ?>
+					<?php esc_html_e( 'Manage', 'fleet-for-openstation' ); ?>
 					<span class="dashicons dashicons-arrow-right-alt2" aria-hidden="true"></span>
 				</a>
-				<?php self::render_action_form( 'check', $id, __( 'Check', 'fleet-for-openstation' ) ); ?>
-				<?php if ( 'active' !== $status ) : ?>
-					<?php self::render_action_form( 'install', $id, 'inactive' === $status ? __( 'Activate OpenStation', 'fleet-for-openstation' ) : __( 'Install OpenStation', 'fleet-for-openstation' ) ); ?>
-				<?php endif; ?>
-				<?php self::render_action_form( 'disconnect', $id, __( 'Disconnect', 'fleet-for-openstation' ), 'danger' ); ?>
+				<details class="fleet-site-menu">
+					<summary aria-label="<?php esc_attr_e( 'More site actions', 'fleet-for-openstation' ); ?>"><span class="dashicons dashicons-ellipsis" aria-hidden="true"></span></summary>
+					<div class="fleet-site-menu__body">
+						<?php self::render_action_form( 'check', $id, __( 'Check now', 'fleet-for-openstation' ) ); ?>
+						<?php if ( 'active' !== $status ) : ?>
+							<?php self::render_action_form( 'install', $id, 'inactive' === $status ? __( 'Activate OpenStation', 'fleet-for-openstation' ) : __( 'Install OpenStation', 'fleet-for-openstation' ) ); ?>
+						<?php endif; ?>
+						<?php self::render_action_form( 'disconnect', $id, __( 'Disconnect', 'fleet-for-openstation' ), 'danger' ); ?>
+					</div>
+				</details>
 			</div>
 		</article>
 		<?php
@@ -1282,11 +1348,11 @@ final class OpenStation_Fleet {
 	 */
 	private static function render_site_workspace( $id, $site, $section, $notice ) {
 		$sections = array(
-			'overview' => __( 'Overview', 'fleet-for-openstation' ),
-			'content'  => __( 'Content', 'fleet-for-openstation' ),
-			'plugins'  => __( 'Plugins', 'fleet-for-openstation' ),
-			'settings' => __( 'Settings', 'fleet-for-openstation' ),
-			'api'      => __( 'API', 'fleet-for-openstation' ),
+			'overview' => array( __( 'Overview', 'fleet-for-openstation' ), 'dashicons-screenoptions' ),
+			'content'  => array( __( 'Content', 'fleet-for-openstation' ), 'dashicons-edit-page' ),
+			'plugins'  => array( __( 'Plugins', 'fleet-for-openstation' ), 'dashicons-admin-plugins' ),
+			'settings' => array( __( 'Settings', 'fleet-for-openstation' ), 'dashicons-admin-settings' ),
+			'api'      => array( __( 'API', 'fleet-for-openstation' ), 'dashicons-rest-api' ),
 		);
 		if ( ! isset( $sections[ $section ] ) ) {
 			$section = 'overview';
@@ -1296,17 +1362,17 @@ final class OpenStation_Fleet {
 		<div class="wrap fleet-app fleet-workspace">
 			<header class="fleet-workspace-header">
 				<div class="fleet-workspace-header__identity">
-					<a class="fleet-back" href="<?php echo esc_url( $back_url ); ?>"><span class="dashicons dashicons-arrow-left-alt2" aria-hidden="true"></span><?php esc_html_e( 'All sites', 'fleet-for-openstation' ); ?></a>
+					<a class="fleet-back" href="<?php echo esc_url( $back_url ); ?>"><span class="dashicons dashicons-arrow-left-alt2" aria-hidden="true"></span><?php esc_html_e( 'Fleet', 'fleet-for-openstation' ); ?></a>
 					<div class="fleet-workspace-title">
-						<span class="fleet-site-icon"><span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span></span>
+						<span class="fleet-site-icon"><span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span><span class="fleet-site-icon__status fleet-site-icon__status--active"></span></span>
 						<div>
-							<span class="fleet-eyebrow"><?php esc_html_e( 'Managing remote site', 'fleet-for-openstation' ); ?></span>
+							<span class="fleet-eyebrow"><?php esc_html_e( 'Remote WordPress context', 'fleet-for-openstation' ); ?></span>
 							<h1><?php echo esc_html( $site['name'] ); ?></h1>
 							<p><?php echo esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ); ?> · <?php echo esc_html( $site['user_login'] ); ?></p>
 						</div>
 					</div>
 				</div>
-				<div class="fleet-remote-badge"><span class="fleet-status-dot" aria-hidden="true"></span><?php esc_html_e( 'Remote context', 'fleet-for-openstation' ); ?></div>
+				<div class="fleet-remote-badge"><span class="fleet-status-dot" aria-hidden="true"></span><span><strong><?php esc_html_e( 'Remote context', 'fleet-for-openstation' ); ?></strong><small><?php echo esc_html( 'oauth' === self::site_auth_type( $site ) ? __( 'OAuth connection', 'fleet-for-openstation' ) : __( 'Application Password', 'fleet-for-openstation' ) ); ?></small></span></div>
 			</header>
 
 			<?php self::render_notice( $notice ); ?>
@@ -1315,10 +1381,11 @@ final class OpenStation_Fleet {
 			<?php endif; ?>
 
 			<nav class="fleet-tabs" aria-label="<?php esc_attr_e( 'Site management', 'fleet-for-openstation' ); ?>">
-				<?php foreach ( $sections as $key => $label ) : ?>
-					<a class="<?php echo $section === $key ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::workspace_url( $id, $key ) ); ?>" <?php echo $section === $key ? 'aria-current="page"' : ''; ?>><?php echo esc_html( $label ); ?></a>
+				<?php foreach ( $sections as $key => $item ) : ?>
+					<a class="<?php echo $section === $key ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::workspace_url( $id, $key ) ); ?>" <?php echo $section === $key ? 'aria-current="page"' : ''; ?>><span class="dashicons <?php echo esc_attr( $item[1] ); ?>" aria-hidden="true"></span><?php echo esc_html( $item[0] ); ?></a>
 				<?php endforeach; ?>
 			</nav>
+			<div class="fleet-context-strip"><span class="dashicons dashicons-controls-repeat" aria-hidden="true"></span><span><?php printf( esc_html__( 'This window is now operating on %s. Every action below runs against that site.', 'fleet-for-openstation' ), '<strong>' . esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ) . '</strong>' ); ?></span></div>
 
 			<main class="fleet-workspace-body">
 				<?php
@@ -1770,7 +1837,10 @@ final class OpenStation_Fleet {
 			return;
 		}
 		?>
-		<div class="notice notice-<?php echo esc_attr( $messages[ $code ][0] ); ?> is-dismissible"><p><?php echo esc_html( $messages[ $code ][1] ); ?></p></div>
+		<div class="fleet-notice fleet-notice--<?php echo esc_attr( $messages[ $code ][0] ); ?>" role="status">
+			<span class="dashicons <?php echo 'success' === $messages[ $code ][0] ? 'dashicons-yes-alt' : 'dashicons-info-outline'; ?>" aria-hidden="true"></span>
+			<p><?php echo esc_html( $messages[ $code ][1] ); ?></p>
+		</div>
 		<?php
 	}
 

@@ -1,102 +1,89 @@
 === Fleet for OpenStation ===
 Contributors: openstation
-Tags: openstation, multisite, agency, site management
+Tags: openstation, agency, site management, application passwords
 Requires at least: 6.5
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.5.1
+Stable tag: 0.7.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Manage connected WordPress sites inside OpenStation using Core Application Passwords and WordPress REST APIs.
+Turn one OpenStation install into a calm, windowed workspace for every WordPress site you manage.
 
 == Description ==
 
-Fleet for OpenStation turns one OpenStation install into an agency hub. Connect another WordPress site through Core's revocable Application Password approval, then manage that site's content, plugins, settings, and any REST API route without opening another wp-admin. Every managed site gets a stable, named OpenStation window, so multiple sites can stay open at the same time.
+One WordPress site is easy. Ten unrelated client sites mean ten dashboards, ten places to check, and ten chances to make the right change on the wrong site.
 
-Fleet never asks for the administrator's normal password. WordPress generates a separate Application Password for Fleet, and Fleet encrypts it at rest on the hub. WordPress capability checks remain authoritative for every request.
+Fleet gives that work one home. One OpenStation install becomes the hub for every WordPress site you manage. See which sites need attention, open each site in its own clearly named window, and work without juggling bookmarks and wp-admin tabs.
 
-After approval, Fleet verifies the connection and installs or activates OpenStation automatically through the Core Plugins API. If installation fails, the WordPress connection remains available so the user can retry without reconnecting.
+= The work comes to you =
 
-Focused workspaces cover posts, pages, comments, media, users, plugins, and common Core settings. A live API Explorer lists every route the selected site advertises—including taxonomies, navigation, templates, blocks, widgets, global styles, fonts, themes, Site Health, and plugin routes—and can run any method the approved WordPress account is allowed to use.
+Fleet Inbox brings pending comments, drafts, posts awaiting review, scheduled work, connection problems, and useful Site Health findings into one queue. Fleet Search uses a secure local index refreshed during site checks, so a large fleet does not make you wait for one live request per site.
 
-Fleet Inbox combines pending comments, drafts, posts awaiting review, scheduled posts, connection issues, and Core Site Health findings across the fleet. Live fleet search finds content, media, comments, and users. Client workspaces open every site assigned to one client as persistent OpenStation windows. These features use only existing WordPress Core REST collections and the Core batch controller; Fleet does not require a companion agent or custom managed-site endpoints.
+= Every site stays independent =
+
+Fleet is installed once, on the hub. Managed sites keep their own WordPress installation, hosting, content, users, and permissions. They do not need a second Fleet plugin or custom Fleet endpoints.
+
+Each connected site opens as a separate native OpenStation window. Client workspaces can open up to eight related site windows at once while larger fleets remain available from the Sites tab.
+
+= Manage what WordPress already exposes =
+
+Focused views cover posts, pages, media details, comments, modern block-theme design, plugins, users, settings, and private agency notes. Explorer can use any REST route advertised by the connected site, with an explicit confirmation before write or delete requests. WordPress capability checks remain authoritative.
+
+= Connect without sharing your normal password =
+
+Connections use WordPress Core's own Application Password approval screen. Fleet never receives the administrator's normal password. WordPress creates a separate, revocable credential for Fleet, and Fleet encrypts its copy on the hub.
+
+During setup, Fleet can install or activate OpenStation on the managed site so it can open as a native desktop window. Fleet itself remains installed only on the hub.
+
+Fleet includes no telemetry or third-party tracking.
 
 == Installation ==
 
-1. Install and activate OpenStation on the hub.
-2. Upload and activate Fleet for OpenStation.
-3. Open Fleet and connect a public HTTPS WordPress site.
-4. Approve the native Application Password connection request on the managed site.
+1. Install and activate a current OpenStation build with the experimental App Framework on the hub.
+2. Upload and activate Fleet for OpenStation on that hub only.
+3. Open Fleet and enter a public HTTPS WordPress site address.
+4. Approve the connection on the managed site's WordPress screen, then return to Fleet and choose Manage.
+
+== Frequently Asked Questions ==
+
+= Does Fleet need to be installed on every site? =
+
+No. Fleet is installed only on the hub. Managed sites use WordPress Core REST APIs and Application Passwords. Fleet can install or activate OpenStation there during setup.
+
+= Does Fleet receive my WordPress password? =
+
+No. Sign-in and approval happen on the managed WordPress site. Fleet receives a separate Application Password that you can revoke from that site's user profile.
+
+= Can Fleet do something my WordPress account cannot? =
+
+No. The managed site checks the approving account's WordPress capabilities on every request.
+
+= What should I do before uninstalling Fleet? =
+
+Disconnect every managed site from Fleet first. Disconnecting revokes the remote Application Password. Uninstalling Fleet removes its local data but cannot contact a site after its encrypted credential has been deleted.
+
+= Does Fleet work without the OpenStation App Framework? =
+
+No. Fleet is a native App Framework application and intentionally has no classic wp-admin interface.
 
 == Screenshots ==
 
-1. The Fleet hub, network chart, filters, and connected-site manifest inside OpenStation.
-2. Fleet Inbox combining editorial work, moderation, scheduled posts, and Site Health findings.
-3. Live search across existing WordPress Core content, media, comments, and user collections.
-4. A named client workspace ready to open multiple independent managed-site windows.
-5. A managed WordPress site running inside its own focused OpenStation window.
-6. The API Explorer running a live WordPress Core settings request.
-7. Three independent Fleet windows open together in the OpenStation overview.
-8. The guided native WordPress connection flow.
+1. See every site, its status, and the work waiting for you from one OpenStation window.
+2. Comments, drafts, scheduled work, and site issues come to one shared inbox.
+3. Find recent content, media, comments, and people across the fleet.
+4. Open every site for one client as a saved workspace.
+5. Manage publishing work without opening another wp-admin.
+6. Reach additional APIs already advertised by the connected WordPress site.
+7. Keep two client sites open at once without losing track of which site you are changing.
+8. Start a connection with only the managed site's HTTPS address—no Fleet plugin installation there.
 
 == Changelog ==
 
-= 0.5.1 =
+= 0.7.0 =
 
-* Unify button, link-button, and connection-summary geometry across Fleet views.
-* Optically align button icons and remove conflicting control-height overrides.
-* Refresh the complete screenshot set against the verified OpenStation runtime.
-
-= 0.5.0 =
-
-* Add a fleet-wide operations inbox for pending comments, editorial work, scheduled posts, connection issues, and Core Site Health findings.
-* Add live search across content, media, comments, and users using only existing WordPress REST collections.
-* Add persistent client workspaces that open every client site in its own OpenStation window.
-* Refine Fleet as a compact OpenStation-native operations console and replace the complete screenshot set.
-
-= 0.4.2 =
-
-* Raise the Fleet hub reliably when returning from a managed-site workspace.
-
-= 0.4.1 =
-
-* Keep the Fleet hub in place when opening a managed-site window and make the workspace back action reliably focus the hub.
-
-= 0.4.0 =
-
-* Open each managed site in its own stable OpenStation window so multiple remote sites can stay open together.
-* Keep navigation inside the selected site's window and make the Fleet back action focus the hub.
-* Add a live, searchable API Explorer for every Core and plugin REST route advertised by the managed site.
-* Expand capability discovery across content types, taxonomies, navigation, widgets, templates, patterns, blocks, styles, fonts, and statuses.
-
-= 0.3.0 =
-
-* Add an attention queue, Core Site Health summaries, WordPress version checks, and 15-minute background refreshes.
-* Add safe bulk status checks and OpenStation install or activation actions.
-* Add client names, tags, plan status, private notes, favorites, search, and filters.
-* Add focused management for comments, media, users, and WordPress.org plugin installation.
-* Add a private Fleet activity history and capability-aware workspace navigation.
-* Make connection a single approval flow that automatically installs or activates OpenStation.
-* Return connection authentication to WordPress Core Application Passwords.
-
-= 0.2.1 =
-
-* Redesign the hub as a compact OpenStation fleet map and site manifest.
-* Make the remote-site context and management navigation clearer.
-
-= 0.2.0 =
-* Add OAuth Authorization Code with PKCE, short-lived access tokens, rotating refresh tokens, and two-sided revocation.
-* Add an in-window remote management workspace for every connected site.
-* Manage Core site settings, post and page status, and installed plugin status.
-* Add a Full API console for any REST route available to the connected WordPress account.
-* Size the Fleet workspace as a centered OpenStation window instead of using the full desktop.
-* Keep Application Passwords only as the bootstrap path for sites that do not have OpenStation yet.
-
-= 0.1.2 =
-* Open managed-site authorization outside the OpenStation Fleet window so security headers do not block it.
-
-= 0.1.1 =
-* Preserve Fleet's state and nonce when returning from Application Password approval.
-
-= 0.1.0 =
-* Initial experimental release.
+* Rebuilt Fleet exclusively on OpenStation's experimental App Framework with no classic interface.
+* Made each managed site an independent native window while keeping Fleet installed only on the hub.
+* Added focused site management, confirmed REST writes, Core Abilities discovery, client workspaces, Inbox, and cached fleet search.
+* Added bounded background checks, concurrent per-site state merging, response-size limits, privacy tools, and stricter framework dependency checks.
+* Refined the native design, accessibility, packaging, automated checks, documentation, and complete screenshot set.

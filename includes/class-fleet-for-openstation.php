@@ -1,6 +1,6 @@
 <?php
 /**
- * Fleet screen and WordPress-to-WordPress orchestration.
+ * Fleet's App Framework integration and WordPress-to-WordPress orchestration.
  *
  * @package FleetForOpenStation
  */
@@ -12,7 +12,6 @@ defined( 'ABSPATH' ) || exit;
  */
 final class OpenStation_Fleet {
 	const CAPABILITY       = 'manage_options';
-	const MENU_SLUG        = 'fleet-for-openstation';
 	const USER_META_SITES  = 'openstation_fleet_sites';
 	const USER_META_EVENTS = 'openstation_fleet_activity';
 	const USER_META_APP_ID = 'openstation_fleet_app_id';
@@ -20,38 +19,117 @@ final class OpenStation_Fleet {
 	const PLUGIN_REST_ID   = 'desktop-mode/desktop-mode';
 	const CRON_HOOK        = 'openstation_fleet_scheduled_check';
 	const CRON_SCHEDULE    = 'openstation_fleet_15_minutes';
+	const CRON_LOCK        = 'openstation_fleet_scheduled_check_lock';
+	const CRON_CURSOR      = 'openstation_fleet_scheduled_check_cursor';
+	const CRON_BATCH_SIZE  = 2;
+	const REQUEST_TIMEOUT  = 12;
+	const RESPONSE_LIMIT   = 2_097_152;
+	const DISCOVERY_LIMIT  = 4_194_304;
 
 	/**
-	 * Register the admin screen and form handlers.
+	 * Register Fleet's native apps, authorization callback, and scheduled checks.
 	 */
 	public static function boot() {
-		add_action( 'admin_menu', array( __CLASS__, 'register_menu' ) );
-		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue_assets' ) );
+		add_filter( 'openstation_apps_directories', array( __CLASS__, 'register_app_directory' ) );
+		add_action( 'init', array( __CLASS__, 'register_app_assets' ), 5 );
+		add_filter( 'openstation_app_window_args', array( __CLASS__, 'add_app_assets' ), 10, 3 );
+		add_action( 'admin_notices', array( __CLASS__, 'render_dependency_notice' ) );
+		add_action( 'network_admin_notices', array( __CLASS__, 'render_dependency_notice' ) );
 		add_filter( 'cron_schedules', array( __CLASS__, 'cron_schedules' ) );
+		add_filter( 'wp_privacy_personal_data_exporters', array( __CLASS__, 'register_privacy_exporter' ) );
+		add_filter( 'wp_privacy_personal_data_erasers', array( __CLASS__, 'register_privacy_eraser' ) );
+		add_action( 'admin_init', array( __CLASS__, 'add_privacy_policy_content' ) );
 		add_action( self::CRON_HOOK, array( __CLASS__, 'run_scheduled_checks' ) );
-		add_action( 'admin_post_openstation_fleet_connect', array( __CLASS__, 'handle_connect' ) );
 		add_action( 'admin_post_openstation_fleet_authorized', array( __CLASS__, 'handle_authorized' ) );
-		add_action( 'admin_post_openstation_fleet_check', array( __CLASS__, 'handle_check' ) );
-		add_action( 'admin_post_openstation_fleet_install', array( __CLASS__, 'handle_install' ) );
-		add_action( 'admin_post_openstation_fleet_bulk', array( __CLASS__, 'handle_bulk' ) );
-		add_action( 'admin_post_openstation_fleet_update_profile', array( __CLASS__, 'handle_update_profile' ) );
-		add_action( 'admin_post_openstation_fleet_toggle_favorite', array( __CLASS__, 'handle_toggle_favorite' ) );
-		add_action( 'admin_post_openstation_fleet_update_settings', array( __CLASS__, 'handle_update_settings' ) );
-		add_action( 'admin_post_openstation_fleet_update_content', array( __CLASS__, 'handle_update_content' ) );
-		add_action( 'admin_post_openstation_fleet_update_plugin', array( __CLASS__, 'handle_update_plugin' ) );
-		add_action( 'admin_post_openstation_fleet_install_plugin', array( __CLASS__, 'handle_install_plugin' ) );
-		add_action( 'admin_post_openstation_fleet_update_comment', array( __CLASS__, 'handle_update_comment' ) );
-		add_action( 'admin_post_openstation_fleet_update_media', array( __CLASS__, 'handle_update_media' ) );
-		add_action( 'admin_post_openstation_fleet_upload_media', array( __CLASS__, 'handle_upload_media' ) );
-		add_action( 'admin_post_openstation_fleet_create_user', array( __CLASS__, 'handle_create_user' ) );
-		add_action( 'admin_post_openstation_fleet_update_user', array( __CLASS__, 'handle_update_user' ) );
-		add_action( 'admin_post_openstation_fleet_api_request', array( __CLASS__, 'handle_api_request' ) );
-		add_action( 'admin_post_openstation_fleet_disconnect', array( __CLASS__, 'handle_disconnect' ) );
-		add_action( 'wp_ajax_openstation_fleet_finish_setup', array( __CLASS__, 'handle_finish_setup' ) );
 
 		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
 			wp_schedule_event( time() + ( 5 * MINUTE_IN_SECONDS ), self::CRON_SCHEDULE, self::CRON_HOOK );
 		}
+	}
+
+	/**
+	 * Whether this OpenStation build provides the App Framework Fleet requires.
+	 *
+	 * @return bool
+	 */
+	public static function has_app_framework() {
+		if ( ! class_exists( '\\OpenStation\\App' ) || ! class_exists( '\\OpenStation\\App\\Os' ) || ! class_exists( '\\OpenStation\\App\\State' ) ) {
+			return false;
+		}
+		foreach ( array( 'define', 'title', 'icon', 'size', 'min_size', 'placement', 'placeable', 'capabilities', 'style', 'state', 'mount', 'title_bar_button', 'window_action', 'view', 'tab', 'action', 'dock_order' ) as $method ) {
+			if ( ! method_exists( '\\OpenStation\\App', $method ) ) {
+				return false;
+			}
+		}
+		foreach ( array( 'get', 'set' ) as $method ) {
+			if ( ! method_exists( '\\OpenStation\\App\\State', $method ) ) {
+				return false;
+			}
+		}
+		return function_exists( 'openstation_apps_registry' ) && function_exists( 'openstation_apps_runtime' );
+	}
+
+	/**
+	 * Explain the hard App Framework dependency without adding a second UI.
+	 */
+	public static function render_dependency_notice() {
+		if ( self::has_app_framework() || ! current_user_can( 'activate_plugins' ) ) {
+			return;
+		}
+		?>
+		<div class="notice notice-error">
+			<p><strong><?php esc_html_e( 'Fleet for OpenStation needs a newer OpenStation build.', 'fleet-for-openstation' ); ?></strong></p>
+			<p><?php esc_html_e( 'Update OpenStation to a version that includes the experimental App Framework. Fleet runs only as a native OpenStation app.', 'fleet-for-openstation' ); ?></p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Let OpenStation discover Fleet's native App Framework definitions.
+	 *
+	 * @param string[] $directories App definition directories.
+	 * @return string[]
+	 */
+	public static function register_app_directory( $directories ) {
+		if ( ! self::has_app_framework() ) {
+			return $directories;
+		}
+		$directories[] = OPENSTATION_FLEET_DIR . 'apps';
+		return array_values( array_unique( $directories ) );
+	}
+
+	/**
+	 * Register the tiny effect bridge shared by Fleet's native windows.
+	 */
+	public static function register_app_assets() {
+		if ( ! self::has_app_framework() ) {
+			return;
+		}
+		wp_register_script(
+			'fleet-for-openstation-app',
+			OPENSTATION_FLEET_URL . 'assets/fleet-app.js',
+			array( 'openstation-app-runtime' ),
+			OPENSTATION_FLEET_VERSION,
+			true
+		);
+	}
+
+	/**
+	 * Attach Fleet's effect bridge only to its two framework apps.
+	 *
+	 * @param array  $args Window registration arguments.
+	 * @param string $id   App id.
+	 * @param mixed  $app  App Framework definition (unused).
+	 * @return array
+	 */
+	public static function add_app_assets( $args, $id, $app = null ) {
+		unset( $app );
+		if ( in_array( $id, array( 'fleet-for-openstation', 'fleet-site' ), true ) ) {
+			$args['scripts']   = isset( $args['scripts'] ) && is_array( $args['scripts'] ) ? $args['scripts'] : array();
+			$args['scripts'][] = 'fleet-for-openstation-app';
+			$args['scripts']   = array_values( array_unique( $args['scripts'] ) );
+		}
+		return $args;
 	}
 
 	/**
@@ -62,8 +140,8 @@ final class OpenStation_Fleet {
 	 */
 	public static function cron_schedules( $schedules ) {
 		$schedules[ self::CRON_SCHEDULE ] = array(
-			'interval' => 15 * MINUTE_IN_SECONDS,
-			'display'  => __( 'Every 15 minutes (Fleet)', 'fleet-for-openstation' ),
+			'interval' => 5 * MINUTE_IN_SECONDS,
+			'display'  => __( 'Every 5 minutes (Fleet)', 'fleet-for-openstation' ),
 		);
 		return $schedules;
 	}
@@ -73,625 +151,108 @@ final class OpenStation_Fleet {
 	 */
 	public static function deactivate() {
 		wp_clear_scheduled_hook( self::CRON_HOOK );
+		delete_option( self::CRON_LOCK );
+		delete_option( self::CRON_CURSOR );
 	}
 
 	/**
-	 * Register a normal wp-admin page. OpenStation already presents normal
-	 * admin pages as windows, so Fleet needs no private window API.
-	 */
-	public static function register_menu() {
-		add_menu_page(
-			__( 'Fleet for OpenStation', 'fleet-for-openstation' ),
-			__( 'Fleet', 'fleet-for-openstation' ),
-			self::CAPABILITY,
-			self::MENU_SLUG,
-			array( __CLASS__, 'render_page' ),
-			'dashicons-admin-site-alt3',
-			58
-		);
-	}
-
-	/**
-	 * Load Fleet's window UI only on its own admin screen.
+	 * Register Fleet's data with WordPress's personal-data exporter.
 	 *
-	 * @param string $hook_suffix Current admin screen hook.
-	 */
-	public static function enqueue_assets( $hook_suffix ) {
-		if ( function_exists( 'openstation_is_shell_request' ) && openstation_is_shell_request() && wp_script_is( 'openstation', 'registered' ) ) {
-			wp_add_inline_script(
-				'openstation',
-				"(function(wp){if(!wp||!wp.hooks){return;}wp.hooks.addFilter('os.window.geometry','fleet-for-openstation/default-size',function(g,c){var id=c.baseId||'';if(id!=='admin-php-page-fleet-for-openstation'&&id.indexOf('fleet-site-')!==0){return g;}var a=c.workArea,w=Math.min(1040,Math.max(640,a.width-48)),h=Math.min(760,Math.max(480,a.height-48));return Object.assign({},g,{x:a.x+Math.max(24,(a.width-w)/2),y:a.y+Math.max(24,(a.height-h)/2),width:w,height:h,state:'normal'});});})(window.wp);",
-				'before'
-			);
-		}
-
-		if ( 'toplevel_page_' . self::MENU_SLUG !== $hook_suffix ) {
-			return;
-		}
-
-		wp_enqueue_style(
-			'fleet-for-openstation-admin',
-			OPENSTATION_FLEET_URL . 'assets/admin.css',
-			array( 'dashicons' ),
-			OPENSTATION_FLEET_VERSION
-		);
-		wp_enqueue_script(
-			'fleet-for-openstation-admin',
-			OPENSTATION_FLEET_URL . 'assets/admin.js',
-			array(),
-			OPENSTATION_FLEET_VERSION,
-			true
-		);
-	}
-
-	/**
-	 * Render the fleet or one connected site's remote workspace.
-	 */
-	public static function render_page() {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
-		}
-
-		$sites   = self::get_sites();
-		$notice  = sanitize_key( self::request_string( $_GET, 'fleet_notice' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display-only notice code.
-		$site_id = sanitize_key( self::request_string( $_GET, 'site_id' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only workspace selector.
-		$section = sanitize_key( self::request_string( $_GET, 'fleet_section' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only workspace selector.
-		$view    = sanitize_key( self::request_string( $_GET, 'fleet_view' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display-only hub view.
-		$launch_id = sanitize_key( self::request_string( $_GET, 'fleet_launch_site' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display-only shell launch request.
-		$view    = 'attention' === $view ? 'inbox' : $view;
-		$view    = in_array( $view, array( 'sites', 'inbox', 'search', 'workspaces', 'activity' ), true ) ? $view : 'sites';
-
-		if ( '' !== $site_id && isset( $sites[ $site_id ] ) && is_array( $sites[ $site_id ] ) ) {
-			if ( 'pending' === $sites[ $site_id ]['setup_status'] ) {
-				self::render_site_setup( $site_id, $sites[ $site_id ] );
-				return;
-			}
-			self::render_site_workspace( $site_id, $sites[ $site_id ], $section, $notice );
-			return;
-		}
-
-		$ready_count     = 0;
-		$attention_count = 0;
-		$inbox_count     = 0;
-		foreach ( $sites as $site ) {
-			if ( empty( $site['error'] ) && 'active' === ( isset( $site['openstation']['status'] ) ? $site['openstation']['status'] : '' ) ) {
-				++$ready_count;
-			}
-			if ( ! empty( self::attention_reasons( $site ) ) ) {
-				++$attention_count;
-			}
-			$inbox_count += self::inbox_item_count( $site );
-		}
-		$display_sites = self::filter_sites( $sites, $view );
-		?>
-		<div class="wrap fleet-app">
-			<?php if ( '' !== $launch_id && isset( $sites[ $launch_id ] ) ) : ?>
-				<a hidden href="<?php echo esc_url( self::workspace_url( $launch_id ) ); ?>" data-fleet-auto-open data-fleet-window-id="<?php echo esc_attr( self::site_window_id( $launch_id ) ); ?>" data-fleet-window-title="<?php echo esc_attr( $sites[ $launch_id ]['name'] ); ?>" data-fleet-return-url="<?php echo esc_url( self::hub_url( array( 'fleet_notice' => $notice ) ) ); ?>"><?php esc_html_e( 'Open managed site', 'fleet-for-openstation' ); ?></a>
-			<?php endif; ?>
-			<header class="fleet-commandbar">
-				<div class="fleet-hero__copy">
-					<span class="fleet-product-mark" aria-hidden="true"><span class="dashicons dashicons-networking"></span></span>
-					<div>
-						<span class="fleet-eyebrow"><?php esc_html_e( 'OpenStation agency tools', 'fleet-for-openstation' ); ?></span>
-						<h1><?php esc_html_e( 'Fleet', 'fleet-for-openstation' ); ?></h1>
-						<p><?php esc_html_e( 'Manage every WordPress site from one station.', 'fleet-for-openstation' ); ?></p>
-					</div>
-				</div>
-				<details class="fleet-connect-popover">
-					<summary class="button button-primary"><span class="dashicons dashicons-plus-alt2" aria-hidden="true"></span><?php esc_html_e( 'Connect site', 'fleet-for-openstation' ); ?></summary>
-					<div class="fleet-connect-popover__body">
-						<div>
-							<span class="fleet-eyebrow"><?php esc_html_e( 'New connection', 'fleet-for-openstation' ); ?></span>
-							<h2><?php esc_html_e( 'Add a WordPress site', 'fleet-for-openstation' ); ?></h2>
-							<p><?php esc_html_e( 'Fleet uses WordPress’s native approval screen, then installs and activates OpenStation automatically.', 'fleet-for-openstation' ); ?></p>
-						</div>
-						<ol class="fleet-connect-steps">
-							<li><span>1</span><?php esc_html_e( 'Enter the site address', 'fleet-for-openstation' ); ?></li>
-							<li><span>2</span><?php esc_html_e( 'Approve Fleet in WordPress', 'fleet-for-openstation' ); ?></li>
-							<li><span>3</span><?php esc_html_e( 'Return connected and ready', 'fleet-for-openstation' ); ?></li>
-						</ol>
-						<form class="fleet-connect-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post" target="_top">
-							<input type="hidden" name="action" value="openstation_fleet_connect">
-							<?php wp_nonce_field( 'openstation_fleet_connect' ); ?>
-							<label for="fleet-for-openstation-site-url"><?php esc_html_e( 'WordPress site URL', 'fleet-for-openstation' ); ?></label>
-							<div class="fleet-connect-form__control">
-								<span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span>
-								<input id="fleet-for-openstation-site-url" name="site_url" type="url" inputmode="url" placeholder="https://example.com" required>
-							</div>
-							<button class="button button-primary" type="submit"><?php esc_html_e( 'Continue on site', 'fleet-for-openstation' ); ?></button>
-						</form>
-						<p class="fleet-connect-note"><span class="dashicons dashicons-lock" aria-hidden="true"></span><?php esc_html_e( 'You never enter a WordPress password into Fleet. If you are not already signed in, WordPress will ask you to sign in on that site.', 'fleet-for-openstation' ); ?></p>
-					</div>
-				</details>
-			</header>
-
-			<?php self::render_notice( $notice ); ?>
-
-			<div class="fleet-summary" role="list" aria-label="<?php esc_attr_e( 'Fleet summary', 'fleet-for-openstation' ); ?>">
-				<div class="fleet-summary__hub" role="listitem">
-					<span class="fleet-status-dot" aria-hidden="true"></span>
-					<span><strong><?php esc_html_e( 'Fleet hub', 'fleet-for-openstation' ); ?></strong><small><?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?></small></span>
-				</div>
-				<div class="fleet-summary__item" role="listitem">
-					<strong><?php echo esc_html( count( $sites ) ); ?></strong>
-					<span><?php esc_html_e( 'Connected sites', 'fleet-for-openstation' ); ?></span>
-				</div>
-				<div class="fleet-summary__item" role="listitem">
-					<strong><?php echo esc_html( $ready_count ); ?></strong>
-					<span><?php esc_html_e( 'OpenStation ready', 'fleet-for-openstation' ); ?></span>
-				</div>
-				<div class="fleet-summary__item fleet-summary__item--attention" role="listitem">
-					<strong><?php echo esc_html( $attention_count ); ?></strong>
-					<span><?php esc_html_e( 'Need attention', 'fleet-for-openstation' ); ?></span>
-				</div>
-			</div>
-
-			<nav class="fleet-hub-tabs" aria-label="<?php esc_attr_e( 'Fleet views', 'fleet-for-openstation' ); ?>">
-				<a class="<?php echo 'sites' === $view ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::hub_url( array( 'fleet_view' => 'sites' ) ) ); ?>"><span class="dashicons dashicons-list-view" aria-hidden="true"></span><?php esc_html_e( 'All sites', 'fleet-for-openstation' ); ?></a>
-				<a class="<?php echo 'inbox' === $view ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::hub_url( array( 'fleet_view' => 'inbox' ) ) ); ?>"><span class="dashicons dashicons-inbox" aria-hidden="true"></span><?php esc_html_e( 'Inbox', 'fleet-for-openstation' ); ?><span class="fleet-tab-count"><?php echo esc_html( $inbox_count ); ?></span></a>
-				<a class="<?php echo 'search' === $view ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::hub_url( array( 'fleet_view' => 'search' ) ) ); ?>"><span class="dashicons dashicons-search" aria-hidden="true"></span><?php esc_html_e( 'Search', 'fleet-for-openstation' ); ?></a>
-				<a class="<?php echo 'workspaces' === $view ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::hub_url( array( 'fleet_view' => 'workspaces' ) ) ); ?>"><span class="dashicons dashicons-screenoptions" aria-hidden="true"></span><?php esc_html_e( 'Workspaces', 'fleet-for-openstation' ); ?></a>
-				<a class="<?php echo 'activity' === $view ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::hub_url( array( 'fleet_view' => 'activity' ) ) ); ?>"><span class="dashicons dashicons-backup" aria-hidden="true"></span><?php esc_html_e( 'Activity', 'fleet-for-openstation' ); ?></a>
-			</nav>
-
-			<?php if ( 'activity' === $view ) : ?>
-				<?php self::render_activity_view(); ?>
-				</div>
-				<?php return; ?>
-			<?php endif; ?>
-			<?php if ( 'inbox' === $view ) : ?>
-				<?php self::render_inbox_view( $sites ); ?>
-				</div>
-				<?php return; ?>
-			<?php endif; ?>
-			<?php if ( 'search' === $view ) : ?>
-				<?php self::render_search_view( $sites ); ?>
-				</div>
-				<?php return; ?>
-			<?php endif; ?>
-			<?php if ( 'workspaces' === $view ) : ?>
-				<?php self::render_workspaces_view( $sites ); ?>
-				</div>
-				<?php return; ?>
-			<?php endif; ?>
-
-			<?php self::render_hub_filters( $sites, $view ); ?>
-
-			<section class="fleet-board" aria-labelledby="fleet-sites-title">
-				<?php self::render_network_map( $display_sites ); ?>
-				<div class="fleet-manifest">
-					<div class="fleet-section-heading">
-						<div>
-							<span class="fleet-eyebrow"><?php esc_html_e( 'Site manifest', 'fleet-for-openstation' ); ?></span>
-							<h2 id="fleet-sites-title"><?php esc_html_e( 'Connected sites', 'fleet-for-openstation' ); ?></h2>
-						</div>
-						<form id="fleet-bulk-form" class="fleet-bulk-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-							<input type="hidden" name="action" value="openstation_fleet_bulk">
-							<?php wp_nonce_field( 'openstation_fleet_bulk' ); ?>
-							<label class="screen-reader-text" for="fleet-bulk-action"><?php esc_html_e( 'Bulk action', 'fleet-for-openstation' ); ?></label>
-							<select id="fleet-bulk-action" name="bulk_action"><option value="check"><?php esc_html_e( 'Check selected', 'fleet-for-openstation' ); ?></option><option value="install"><?php esc_html_e( 'Install or activate OpenStation', 'fleet-for-openstation' ); ?></option></select>
-							<button class="button button-secondary" type="submit"><?php esc_html_e( 'Apply', 'fleet-for-openstation' ); ?></button>
-						</form>
-					</div>
-					<?php if ( empty( $display_sites ) ) : ?>
-						<div class="fleet-empty">
-							<span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span>
-							<h3><?php echo empty( $sites ) ? esc_html__( 'Your fleet starts here', 'fleet-for-openstation' ) : esc_html__( 'No sites match this view', 'fleet-for-openstation' ); ?></h3>
-							<p><?php echo empty( $sites ) ? esc_html__( 'Use Connect site to open your first remote management workspace.', 'fleet-for-openstation' ) : esc_html__( 'Clear the filters or check another Fleet view.', 'fleet-for-openstation' ); ?></p>
-						</div>
-					<?php else : ?>
-						<div class="fleet-site-list">
-							<?php foreach ( $display_sites as $id => $site ) : ?>
-								<?php self::render_site_card( (string) $id, $site ); ?>
-							<?php endforeach; ?>
-						</div>
-					<?php endif; ?>
-				</div>
-			</section>
-		</div>
-		<?php
-	}
-
-	/**
-	 * Render a compact visual map of the hub and the first five connected sites.
-	 *
-	 * @param array $sites Connected site records.
-	 */
-	private static function render_network_map( $sites ) {
-		$positions = array(
-			array( 50, 13 ),
-			array( 83, 39 ),
-			array( 70, 80 ),
-			array( 30, 80 ),
-			array( 17, 39 ),
-		);
-		$map_sites = array_slice( $sites, 0, count( $positions ), true );
-		?>
-		<div class="fleet-map" aria-label="<?php esc_attr_e( 'Fleet network chart', 'fleet-for-openstation' ); ?>">
-			<div class="fleet-map__heading">
-				<span class="fleet-eyebrow"><?php esc_html_e( 'Network chart', 'fleet-for-openstation' ); ?></span>
-				<span class="fleet-map__legend"><span class="fleet-status-dot" aria-hidden="true"></span><?php esc_html_e( 'Hub online', 'fleet-for-openstation' ); ?></span>
-			</div>
-			<div class="fleet-map__canvas">
-				<svg class="fleet-map__lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-					<?php $map_index = 0; ?>
-					<?php foreach ( $map_sites as $site ) : ?>
-						<line x1="50" y1="50" x2="<?php echo esc_attr( $positions[ $map_index ][0] ); ?>" y2="<?php echo esc_attr( $positions[ $map_index ][1] ); ?>"></line>
-						<?php ++$map_index; ?>
-					<?php endforeach; ?>
-				</svg>
-				<div class="fleet-map__hub">
-					<span class="dashicons dashicons-networking" aria-hidden="true"></span>
-					<strong><?php esc_html_e( 'Fleet hub', 'fleet-for-openstation' ); ?></strong>
-				</div>
-				<?php $map_index = 0; ?>
-				<?php foreach ( $map_sites as $id => $site ) : ?>
-					<?php
-					$status     = isset( $site['openstation']['status'] ) ? $site['openstation']['status'] : 'unknown';
-					$manage_url = add_query_arg( array( 'page' => self::MENU_SLUG, 'site_id' => (string) $id ), admin_url( 'admin.php' ) );
-					?>
-					<a class="fleet-map__site fleet-map__site--<?php echo esc_attr( $status ); ?>" style="--fleet-x: <?php echo esc_attr( $positions[ $map_index ][0] ); ?>%; --fleet-y: <?php echo esc_attr( $positions[ $map_index ][1] ); ?>%;" href="<?php echo esc_url( $manage_url ); ?>" target="<?php echo esc_attr( self::site_window_id( $id ) ); ?>" data-fleet-window-id="<?php echo esc_attr( self::site_window_id( $id ) ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>">
-						<span class="fleet-map__site-dot"><span class="fleet-status-dot" aria-hidden="true"></span></span>
-						<strong><?php echo esc_html( $site['name'] ); ?></strong>
-					</a>
-					<?php ++$map_index; ?>
-				<?php endforeach; ?>
-				<?php if ( empty( $map_sites ) ) : ?>
-					<p class="fleet-map__empty"><?php esc_html_e( 'Your connected sites will gather around this hub.', 'fleet-for-openstation' ); ?></p>
-				<?php elseif ( count( $sites ) > count( $map_sites ) ) : ?>
-					<span class="fleet-map__overflow"><?php printf( esc_html__( '+%d more', 'fleet-for-openstation' ), esc_html( count( $sites ) - count( $map_sites ) ) ); ?></span>
-				<?php endif; ?>
-			</div>
-			<p class="fleet-map__caption"><?php esc_html_e( 'Select a site to open or focus its own remote WordPress window.', 'fleet-for-openstation' ); ?></p>
-		</div>
-		<?php
-	}
-
-	/**
-	 * Apply hub search, agency filters, and the attention view.
-	 *
-	 * @param array  $sites Connected sites.
-	 * @param string $view  Hub view.
+	 * @param array $exporters Registered exporters.
 	 * @return array
 	 */
-	private static function filter_sites( $sites, $view ) {
-		$search   = strtolower( sanitize_text_field( self::request_string( $_GET, 'fleet_search' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$client   = sanitize_text_field( self::request_string( $_GET, 'fleet_client' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$tag      = sanitize_text_field( self::request_string( $_GET, 'fleet_tag' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$plan     = sanitize_key( self::request_string( $_GET, 'fleet_plan' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$favorites = '1' === self::request_string( $_GET, 'fleet_favorites' ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$filtered = array();
-		foreach ( $sites as $id => $site ) {
+	public static function register_privacy_exporter( $exporters ) {
+		$exporters['fleet-for-openstation'] = array(
+			'exporter_friendly_name' => __( 'Fleet for OpenStation', 'fleet-for-openstation' ),
+			'callback'               => array( __CLASS__, 'export_personal_data' ),
+		);
+		return $exporters;
+	}
+
+	/**
+	 * Register a safe eraser that never strands remote credentials silently.
+	 *
+	 * @param array $erasers Registered erasers.
+	 * @return array
+	 */
+	public static function register_privacy_eraser( $erasers ) {
+		$erasers['fleet-for-openstation'] = array(
+			'eraser_friendly_name' => __( 'Fleet for OpenStation', 'fleet-for-openstation' ),
+			'callback'             => array( __CLASS__, 'erase_personal_data' ),
+		);
+		return $erasers;
+	}
+
+	/**
+	 * Suggest an accurate Fleet paragraph for the site's privacy policy.
+	 */
+	public static function add_privacy_policy_content() {
+		if ( ! function_exists( 'wp_add_privacy_policy_content' ) ) {
+			return;
+		}
+		wp_add_privacy_policy_content(
+			__( 'Fleet for OpenStation', 'fleet-for-openstation' ),
+			wp_kses_post( __( 'Fleet stores each administrator’s connected-site URLs, remote usernames, encrypted Application Password credentials, client labels, private notes, and recent Fleet activity in that administrator’s user metadata. It sends authenticated requests only to sites that administrator connects. Fleet includes no telemetry or third-party tracking. Disconnect a site before removing Fleet to revoke its remote credential.', 'fleet-for-openstation' ) )
+		);
+	}
+
+	/**
+	 * Export one user's non-secret Fleet metadata.
+	 *
+	 * @param string $email_address Requested email address.
+	 * @return array WordPress privacy exporter response.
+	 */
+	public static function export_personal_data( $email_address ) {
+		$user = get_user_by( 'email', $email_address );
+		if ( ! $user ) {
+			return array( 'data' => array(), 'done' => true );
+		}
+
+		$data  = array();
+		$sites = get_user_meta( $user->ID, self::USER_META_SITES, true );
+		foreach ( is_array( $sites ) ? $sites : array() as $site_id => $site ) {
+			$site   = self::normalize_site_record( is_array( $site ) ? $site : array() );
 			$agency = $site['agency'];
-			if ( 'attention' === $view && empty( self::attention_reasons( $site ) ) ) {
-				continue;
-			}
-			if ( $favorites && empty( $agency['favorite'] ) ) {
-				continue;
-			}
-			if ( '' !== $client && $client !== $agency['client_name'] ) {
-				continue;
-			}
-			if ( '' !== $tag && ! in_array( $tag, $agency['tags'], true ) ) {
-				continue;
-			}
-			if ( '' !== $plan && $plan !== $agency['plan_status'] ) {
-				continue;
-			}
-			if ( '' !== $search ) {
-				$haystack = strtolower( implode( ' ', array( $site['name'], $site['site_url'], $agency['client_name'], implode( ' ', $agency['tags'] ), $agency['notes'] ) ) );
-				if ( false === strpos( $haystack, $search ) ) {
-					continue;
-				}
-			}
-			$filtered[ $id ] = $site;
-		}
-		uasort(
-			$filtered,
-			static function ( $a, $b ) {
-				$favorite = (int) ! empty( $b['agency']['favorite'] ) <=> (int) ! empty( $a['agency']['favorite'] );
-				return 0 !== $favorite ? $favorite : strcasecmp( $a['name'], $b['name'] );
-			}
-		);
-		return $filtered;
-	}
-
-	/**
-	 * Render agency filters using a normal Core GET form.
-	 *
-	 * @param array  $sites Connected sites.
-	 * @param string $view  Current hub view.
-	 */
-	private static function render_hub_filters( $sites, $view ) {
-		$clients = array();
-		$tags    = array();
-		foreach ( $sites as $site ) {
-			if ( '' !== $site['agency']['client_name'] ) {
-				$clients[] = $site['agency']['client_name'];
-			}
-			$tags = array_merge( $tags, $site['agency']['tags'] );
-		}
-		$clients = array_values( array_unique( $clients ) );
-		$tags    = array_values( array_unique( $tags ) );
-		sort( $clients, SORT_NATURAL | SORT_FLAG_CASE );
-		sort( $tags, SORT_NATURAL | SORT_FLAG_CASE );
-		$current_search = sanitize_text_field( self::request_string( $_GET, 'fleet_search' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$current_client = sanitize_text_field( self::request_string( $_GET, 'fleet_client' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$current_tag    = sanitize_text_field( self::request_string( $_GET, 'fleet_tag' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		$current_plan   = sanitize_key( self::request_string( $_GET, 'fleet_plan' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter.
-		?>
-		<form class="fleet-filters" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" method="get">
-			<input type="hidden" name="page" value="<?php echo esc_attr( self::MENU_SLUG ); ?>">
-			<input type="hidden" name="fleet_view" value="<?php echo esc_attr( $view ); ?>">
-			<label class="fleet-filter-search"><span class="dashicons dashicons-search" aria-hidden="true"></span><span class="screen-reader-text"><?php esc_html_e( 'Search sites', 'fleet-for-openstation' ); ?></span><input name="fleet_search" type="search" value="<?php echo esc_attr( $current_search ); ?>" placeholder="<?php esc_attr_e( 'Search sites, clients, notes…', 'fleet-for-openstation' ); ?>"></label>
-			<label><span class="screen-reader-text"><?php esc_html_e( 'Client', 'fleet-for-openstation' ); ?></span><select name="fleet_client"><option value=""><?php esc_html_e( 'All clients', 'fleet-for-openstation' ); ?></option><?php foreach ( $clients as $client ) : ?><option value="<?php echo esc_attr( $client ); ?>" <?php selected( $current_client, $client ); ?>><?php echo esc_html( $client ); ?></option><?php endforeach; ?></select></label>
-			<label><span class="screen-reader-text"><?php esc_html_e( 'Tag', 'fleet-for-openstation' ); ?></span><select name="fleet_tag"><option value=""><?php esc_html_e( 'All tags', 'fleet-for-openstation' ); ?></option><?php foreach ( $tags as $site_tag ) : ?><option value="<?php echo esc_attr( $site_tag ); ?>" <?php selected( $current_tag, $site_tag ); ?>><?php echo esc_html( $site_tag ); ?></option><?php endforeach; ?></select></label>
-			<label><span class="screen-reader-text"><?php esc_html_e( 'Maintenance plan', 'fleet-for-openstation' ); ?></span><select name="fleet_plan"><option value=""><?php esc_html_e( 'All plans', 'fleet-for-openstation' ); ?></option><?php foreach ( array( 'active' => __( 'Active plan', 'fleet-for-openstation' ), 'paused' => __( 'Paused plan', 'fleet-for-openstation' ), 'ended' => __( 'Ended plan', 'fleet-for-openstation' ), 'none' => __( 'No plan', 'fleet-for-openstation' ) ) as $value => $label ) : ?><option value="<?php echo esc_attr( $value ); ?>" <?php selected( $current_plan, $value ); ?>><?php echo esc_html( $label ); ?></option><?php endforeach; ?></select></label>
-			<label class="fleet-favorite-filter"><input name="fleet_favorites" type="checkbox" value="1" <?php checked( self::request_string( $_GET, 'fleet_favorites' ), '1' ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only filter. ?>><?php esc_html_e( 'Favorites', 'fleet-for-openstation' ); ?></label>
-			<button class="button button-secondary" type="submit"><?php esc_html_e( 'Filter', 'fleet-for-openstation' ); ?></button>
-			<a class="fleet-filter-clear" href="<?php echo esc_url( self::hub_url( array( 'fleet_view' => $view ) ) ); ?>"><?php esc_html_e( 'Clear', 'fleet-for-openstation' ); ?></a>
-		</form>
-		<?php
-	}
-
-	/**
-	 * Render recent local Fleet activity.
-	 */
-	private static function render_activity_view() {
-		$events = self::get_activity();
-		?>
-		<section class="fleet-activity-view">
-			<div class="fleet-section-heading"><div><span class="fleet-eyebrow"><?php esc_html_e( 'Hub history', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Recent activity', 'fleet-for-openstation' ); ?></h2></div><span class="fleet-count"><?php echo esc_html( count( $events ) ); ?></span></div>
-			<?php if ( empty( $events ) ) : ?>
-				<div class="fleet-empty"><span class="dashicons dashicons-backup" aria-hidden="true"></span><h3><?php esc_html_e( 'No activity yet', 'fleet-for-openstation' ); ?></h3><p><?php esc_html_e( 'Fleet will record connection, maintenance, and management actions here.', 'fleet-for-openstation' ); ?></p></div>
-			<?php else : ?>
-				<div class="fleet-activity-list">
-					<?php foreach ( $events as $event ) : ?>
-						<div class="fleet-activity-item fleet-activity-item--<?php echo esc_attr( isset( $event['status'] ) ? $event['status'] : 'success' ); ?>">
-							<span class="fleet-activity-icon"><span class="dashicons <?php echo isset( $event['status'] ) && 'error' === $event['status'] ? 'dashicons-warning' : 'dashicons-yes-alt'; ?>" aria-hidden="true"></span></span>
-							<span><strong><?php echo esc_html( isset( $event['site_name'] ) ? $event['site_name'] : __( 'Fleet', 'fleet-for-openstation' ) ); ?></strong><small><?php echo esc_html( isset( $event['message'] ) ? $event['message'] : '' ); ?></small></span>
-							<span class="fleet-activity-meta"><?php echo esc_html( isset( $event['actor'] ) ? $event['actor'] : '' ); ?><time><?php echo ! empty( $event['time'] ) ? esc_html( human_time_diff( $event['time'], time() ) . ' ' . __( 'ago', 'fleet-for-openstation' ) ) : ''; ?></time></span>
-						</div>
-					<?php endforeach; ?>
-				</div>
-			<?php endif; ?>
-		</section>
-		<?php
-	}
-
-	/**
-	 * Render the cached, Core-powered work queue across connected sites.
-	 *
-	 * @param array $sites Connected sites.
-	 */
-	private static function render_inbox_view( $sites ) {
-		$last_checked = 0;
-		$totals = array(
-			'attention'        => 0,
-			'pending_comments' => 0,
-			'editorial'        => 0,
-			'scheduled'        => 0,
-		);
-		foreach ( $sites as $site ) {
-			$inbox                       = self::normalize_inbox_summary( isset( $site['inbox'] ) ? $site['inbox'] : array() );
-			$last_checked                 = max( $last_checked, (int) $inbox['checked'] );
-			$totals['attention']        += count( self::attention_reasons( $site ) );
-			$totals['pending_comments'] += $inbox['pending_comments']['count'];
-			$totals['editorial']        += $inbox['drafts']['count'] + $inbox['pending_posts']['count'];
-			$totals['scheduled']        += $inbox['scheduled_posts']['count'];
-			foreach ( array( 'pending_comments', 'drafts', 'pending_posts', 'scheduled_posts' ) as $key ) {
-				if ( ! empty( $inbox[ $key ]['error'] ) ) {
-					++$totals['attention'];
-				}
-			}
-		}
-		$total = array_sum( $totals );
-		?>
-		<section class="fleet-operations-view">
-			<div class="fleet-section-heading">
-				<div><span class="fleet-eyebrow"><?php esc_html_e( 'WordPress work queue', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Fleet Inbox', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Comments, editorial work, scheduled posts, connection issues, and Core Site Health findings from every connected site.', 'fleet-for-openstation' ); ?></p></div>
-				<div class="fleet-view-meta">
-					<?php if ( $last_checked ) : ?><span><span class="dashicons dashicons-update" aria-hidden="true"></span><?php printf( esc_html__( 'Updated %s ago', 'fleet-for-openstation' ), esc_html( human_time_diff( $last_checked, time() ) ) ); ?></span><?php endif; ?>
-					<span class="fleet-count"><?php printf( esc_html( _n( '%d item', '%d items', $total, 'fleet-for-openstation' ) ), esc_html( $total ) ); ?></span>
-				</div>
-			</div>
-			<div class="fleet-inbox-summary" role="list" aria-label="<?php esc_attr_e( 'Inbox summary', 'fleet-for-openstation' ); ?>">
-				<div role="listitem"><span class="dashicons dashicons-warning" aria-hidden="true"></span><strong><?php echo esc_html( $totals['attention'] ); ?></strong><small><?php esc_html_e( 'Health and connection', 'fleet-for-openstation' ); ?></small></div>
-				<div role="listitem"><span class="dashicons dashicons-admin-comments" aria-hidden="true"></span><strong><?php echo esc_html( $totals['pending_comments'] ); ?></strong><small><?php esc_html_e( 'Comments awaiting review', 'fleet-for-openstation' ); ?></small></div>
-				<div role="listitem"><span class="dashicons dashicons-edit-page" aria-hidden="true"></span><strong><?php echo esc_html( $totals['editorial'] ); ?></strong><small><?php esc_html_e( 'Drafts and pending posts', 'fleet-for-openstation' ); ?></small></div>
-				<div role="listitem"><span class="dashicons dashicons-calendar-alt" aria-hidden="true"></span><strong><?php echo esc_html( $totals['scheduled'] ); ?></strong><small><?php esc_html_e( 'Scheduled posts', 'fleet-for-openstation' ); ?></small></div>
-			</div>
-
-			<?php if ( empty( $sites ) ) : ?>
-				<div class="fleet-empty"><span class="dashicons dashicons-inbox" aria-hidden="true"></span><h3><?php esc_html_e( 'Connect a site to build your inbox', 'fleet-for-openstation' ); ?></h3><p><?php esc_html_e( 'Fleet uses only the REST collections WordPress already provides.', 'fleet-for-openstation' ); ?></p></div>
-			<?php elseif ( 0 === $total ) : ?>
-				<div class="fleet-empty"><span class="dashicons dashicons-yes-alt" aria-hidden="true"></span><h3><?php esc_html_e( 'The fleet is clear', 'fleet-for-openstation' ); ?></h3><p><?php esc_html_e( 'No cached work or health findings need attention. Use Check now on a site whenever you want a fresh reading.', 'fleet-for-openstation' ); ?></p></div>
-			<?php else : ?>
-				<div class="fleet-inbox-sites">
-					<div class="fleet-inbox-sites__heading"><strong><?php esc_html_e( 'Site work groups', 'fleet-for-openstation' ); ?></strong><span><?php esc_html_e( 'Open a row to work in that site’s persistent window.', 'fleet-for-openstation' ); ?></span></div>
-					<?php foreach ( $sites as $id => $site ) : ?>
-						<?php
-						$inbox     = self::normalize_inbox_summary( isset( $site['inbox'] ) ? $site['inbox'] : array() );
-						$attention = self::attention_reasons( $site );
-						$count     = self::inbox_item_count( $site );
-						if ( 0 === $count ) {
-							continue;
-						}
-						$window_id = self::site_window_id( $id );
-						?>
-						<article class="fleet-inbox-site">
-							<header>
-								<div><span class="fleet-site-icon"><span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span></span><span><strong><?php echo esc_html( $site['name'] ); ?></strong><small><?php echo esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ); ?><?php if ( $inbox['checked'] ) : ?> · <?php printf( esc_html__( 'checked %s ago', 'fleet-for-openstation' ), esc_html( human_time_diff( $inbox['checked'], time() ) ) ); ?><?php endif; ?></small></span></div>
-								<div class="fleet-inbox-site__actions"><span class="fleet-site-work-count"><?php printf( esc_html( _n( '%d item', '%d items', $count, 'fleet-for-openstation' ) ), esc_html( $count ) ); ?></span><a class="button button-secondary" href="<?php echo esc_url( self::workspace_url( $id ) ); ?>" target="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-id="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>"><?php esc_html_e( 'Open site', 'fleet-for-openstation' ); ?><span class="dashicons dashicons-external" aria-hidden="true"></span></a></div>
-							</header>
-							<div class="fleet-inbox-groups">
-								<?php if ( ! empty( $attention ) ) : ?>
-									<a class="fleet-inbox-group fleet-inbox-group--attention" href="<?php echo esc_url( self::workspace_url( $id ) ); ?>" target="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-id="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>"><span class="dashicons dashicons-warning" aria-hidden="true"></span><span><strong><?php printf( esc_html( _n( '%d health item', '%d health items', count( $attention ), 'fleet-for-openstation' ) ), esc_html( count( $attention ) ) ); ?></strong><small><?php echo esc_html( implode( ' · ', array_slice( wp_list_pluck( $attention, 1 ), 0, 2 ) ) ); ?></small></span><span class="dashicons dashicons-arrow-right-alt2 fleet-row-arrow" aria-hidden="true"></span></a>
-								<?php endif; ?>
-								<?php
-								$groups = array(
-									'pending_comments' => array( 'dashicons-admin-comments', __( 'Comments awaiting review', 'fleet-for-openstation' ), 'comments' ),
-									'drafts'           => array( 'dashicons-edit-page', __( 'Draft posts', 'fleet-for-openstation' ), 'content' ),
-									'pending_posts'    => array( 'dashicons-clock', __( 'Posts awaiting publication', 'fleet-for-openstation' ), 'content' ),
-									'scheduled_posts'  => array( 'dashicons-calendar-alt', __( 'Scheduled posts', 'fleet-for-openstation' ), 'content' ),
-								);
-								foreach ( $groups as $key => $definition ) :
-									if ( empty( $inbox[ $key ]['count'] ) && empty( $inbox[ $key ]['error'] ) ) {
-										continue;
-									}
-									$examples = array();
-									foreach ( array_slice( $inbox[ $key ]['items'], 0, 2 ) as $item ) {
-										if ( 'pending_comments' === $key ) {
-											$examples[] = isset( $item['author_name'] ) ? sanitize_text_field( $item['author_name'] ) : __( 'Comment', 'fleet-for-openstation' );
-										} else {
-											$examples[] = ! empty( $item['title']['rendered'] ) ? sanitize_text_field( wp_strip_all_tags( $item['title']['rendered'] ) ) : __( '(Untitled)', 'fleet-for-openstation' );
-										}
-									}
-									?>
-									<a class="fleet-inbox-group" href="<?php echo esc_url( self::workspace_url( $id, $definition[2] ) ); ?>" target="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-id="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>"><span class="dashicons <?php echo esc_attr( $definition[0] ); ?>" aria-hidden="true"></span><span><strong><?php echo esc_html( $inbox[ $key ]['count'] ); ?> <?php echo esc_html( $definition[1] ); ?></strong><small><?php echo ! empty( $inbox[ $key ]['error'] ) ? esc_html( $inbox[ $key ]['error'] ) : esc_html( implode( ' · ', $examples ) ); ?></small></span><span class="dashicons dashicons-arrow-right-alt2 fleet-row-arrow" aria-hidden="true"></span></a>
-								<?php endforeach; ?>
-							</div>
-						</article>
-					<?php endforeach; ?>
-				</div>
-			<?php endif; ?>
-		</section>
-		<?php
-	}
-
-	/**
-	 * Render live search across Core content, users, comments, and media.
-	 *
-	 * @param array $sites Connected sites.
-	 */
-	private static function render_search_view( $sites ) {
-		$query   = sanitize_text_field( self::request_string( $_GET, 'fleet_query' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only search.
-		$client  = sanitize_text_field( self::request_string( $_GET, 'fleet_client' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only search scope.
-		$clients = array();
-		foreach ( $sites as $site ) {
-			if ( ! empty( $site['agency']['client_name'] ) ) {
-				$clients[] = $site['agency']['client_name'];
-			}
-		}
-		$clients = array_values( array_unique( $clients ) );
-		sort( $clients, SORT_NATURAL | SORT_FLAG_CASE );
-		?>
-		<section class="fleet-search-view">
-			<div class="fleet-section-heading"><div><span class="fleet-eyebrow"><?php esc_html_e( 'Live Core REST search', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Search the fleet', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Find content, media, comments, and people without opening each WordPress site first.', 'fleet-for-openstation' ); ?></p></div></div>
-			<form class="fleet-global-search" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" method="get">
-				<input type="hidden" name="page" value="<?php echo esc_attr( self::MENU_SLUG ); ?>">
-				<input type="hidden" name="fleet_view" value="search">
-				<label><span class="screen-reader-text"><?php esc_html_e( 'Search query', 'fleet-for-openstation' ); ?></span><span class="dashicons dashicons-search" aria-hidden="true"></span><input type="search" name="fleet_query" value="<?php echo esc_attr( $query ); ?>" minlength="2" placeholder="<?php esc_attr_e( 'Search titles, files, comments, or people…', 'fleet-for-openstation' ); ?>" required></label>
-				<select name="fleet_client" aria-label="<?php esc_attr_e( 'Client scope', 'fleet-for-openstation' ); ?>"><option value=""><?php esc_html_e( 'Every connected site', 'fleet-for-openstation' ); ?></option><?php foreach ( $clients as $client_name ) : ?><option value="<?php echo esc_attr( $client_name ); ?>" <?php selected( $client, $client_name ); ?>><?php echo esc_html( $client_name ); ?></option><?php endforeach; ?></select>
-				<button class="button button-primary" type="submit"><?php esc_html_e( 'Search', 'fleet-for-openstation' ); ?></button>
-			</form>
-			<?php
-			if ( '' === $query ) {
-				?><div class="fleet-search-prompt"><span class="dashicons dashicons-search" aria-hidden="true"></span><h3><?php esc_html_e( 'One search, every site', 'fleet-for-openstation' ); ?></h3><p><?php esc_html_e( 'Fleet sends authenticated read-only searches only to the WordPress sites in your chosen scope.', 'fleet-for-openstation' ); ?></p></div><?php
-				return;
-			}
-
-			$targets = array_filter(
-				$sites,
-				static function ( $site ) use ( $client ) {
-					return '' === $client || $client === $site['agency']['client_name'];
-				}
+			$data[] = array(
+				'group_id'    => 'fleet-for-openstation-sites',
+				'group_label' => __( 'Fleet connected sites', 'fleet-for-openstation' ),
+				'item_id'     => 'fleet-site-' . sanitize_key( $site_id ),
+				'data'        => array(
+					array( 'name' => __( 'Site URL', 'fleet-for-openstation' ), 'value' => esc_url_raw( isset( $site['site_url'] ) ? $site['site_url'] : '' ) ),
+					array( 'name' => __( 'Remote username', 'fleet-for-openstation' ), 'value' => sanitize_user( isset( $site['user_login'] ) ? $site['user_login'] : '', true ) ),
+					array( 'name' => __( 'Client', 'fleet-for-openstation' ), 'value' => sanitize_text_field( $agency['client_name'] ) ),
+					array( 'name' => __( 'Tags', 'fleet-for-openstation' ), 'value' => implode( ', ', array_map( 'sanitize_text_field', $agency['tags'] ) ) ),
+					array( 'name' => __( 'Private notes', 'fleet-for-openstation' ), 'value' => sanitize_textarea_field( $agency['notes'] ) ),
+				),
 			);
-			$limited = count( $targets ) > 25;
-			$targets = array_slice( $targets, 0, 25, true );
-			$results = array();
-			foreach ( $targets as $id => $site ) {
-				$results[ $id ] = self::search_site( $site, $query );
-			}
-			if ( $limited ) : ?>
-				<div class="fleet-inline-error"><span class="dashicons dashicons-info-outline" aria-hidden="true"></span><span><?php esc_html_e( 'This search covers the first 25 matching sites. Choose a client to narrow a larger fleet.', 'fleet-for-openstation' ); ?></span></div>
-			<?php endif; ?>
-			<div class="fleet-search-results">
-				<?php $match_count = 0; ?>
-				<?php foreach ( $results as $id => $items ) : ?>
-					<?php
-					$site      = $sites[ $id ];
-					$window_id = self::site_window_id( $id );
-					if ( ! is_wp_error( $items ) ) {
-						$match_count += count( $items );
-					}
-					?>
-					<article class="fleet-search-site">
-						<header><div><strong><?php echo esc_html( $site['name'] ); ?></strong><small><?php echo esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ); ?></small></div><span class="fleet-count"><?php echo is_wp_error( $items ) ? '!' : esc_html( count( $items ) ); ?></span></header>
-						<?php if ( is_wp_error( $items ) ) : ?>
-							<p class="fleet-search-error"><?php echo esc_html( $items->get_error_message() ); ?></p>
-						<?php elseif ( empty( $items ) ) : ?>
-							<p class="fleet-search-none"><?php esc_html_e( 'No matches on this site.', 'fleet-for-openstation' ); ?></p>
-						<?php else : ?>
-							<div class="fleet-search-items">
-								<?php foreach ( $items as $item ) : ?>
-									<a href="<?php echo esc_url( self::workspace_url( $id, $item['section'] ) ); ?>" target="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-id="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>"><span class="dashicons <?php echo esc_attr( $item['icon'] ); ?>" aria-hidden="true"></span><span><strong><?php echo esc_html( $item['title'] ); ?></strong><small><?php echo esc_html( $item['meta'] ); ?></small></span><span class="dashicons dashicons-arrow-right-alt2" aria-hidden="true"></span></a>
-								<?php endforeach; ?>
-							</div>
-						<?php endif; ?>
-					</article>
-				<?php endforeach; ?>
-			</div>
-			<?php if ( 0 === $match_count && ! empty( $targets ) ) : ?><p class="fleet-search-total"><?php printf( esc_html__( 'No matches for “%s” across the searched sites.', 'fleet-for-openstation' ), esc_html( $query ) ); ?></p><?php endif; ?>
-		</section>
-		<?php
+		}
+		return array( 'data' => $data, 'done' => true );
 	}
 
 	/**
-	 * Search one site through its existing WordPress Core collections.
+	 * Erase local activity and metadata after credentials are safely revoked.
 	 *
-	 * @param array  $site  Site record.
-	 * @param string $query Search query.
-	 * @return array|WP_Error
+	 * @param string $email_address Requested email address.
+	 * @return array WordPress privacy eraser response.
 	 */
-	private static function search_site( $site, $query ) {
-		$common   = array( 'search' => $query, 'per_page' => 8 );
-		$requests = array();
-		$keys     = array();
-		if ( self::supports( $site, 'search' ) ) {
-			$keys[]     = 'content';
-			$requests[] = array( 'method' => 'GET', 'path' => '/wp/v2/search?' . http_build_query( $common, '', '&' ) );
+	public static function erase_personal_data( $email_address ) {
+		$user = get_user_by( 'email', $email_address );
+		if ( ! $user ) {
+			return array( 'items_removed' => false, 'items_retained' => false, 'messages' => array(), 'done' => true );
 		}
-		if ( self::supports( $site, 'posts' ) ) {
-			$keys[]     = 'posts';
-			$requests[] = array( 'method' => 'GET', 'path' => '/wp/v2/posts?' . http_build_query( $common + array( 'context' => 'edit', 'status' => 'any', '_fields' => 'id,title,status,type' ), '', '&' ) );
+		$sites = get_user_meta( $user->ID, self::USER_META_SITES, true );
+		if ( is_array( $sites ) && ! empty( $sites ) ) {
+			return array(
+				'items_removed'  => false,
+				'items_retained' => true,
+				'messages'       => array( __( 'Disconnect every Fleet site first so WordPress can revoke each remote credential safely.', 'fleet-for-openstation' ) ),
+				'done'           => true,
+			);
 		}
-		if ( self::supports( $site, 'pages' ) ) {
-			$keys[]     = 'pages';
-			$requests[] = array( 'method' => 'GET', 'path' => '/wp/v2/pages?' . http_build_query( $common + array( 'context' => 'edit', 'status' => 'any', '_fields' => 'id,title,status,type' ), '', '&' ) );
-		}
-		if ( self::supports( $site, 'users' ) ) {
-			$keys[]     = 'users';
-			$requests[] = array( 'method' => 'GET', 'path' => '/wp/v2/users?' . http_build_query( $common + array( 'context' => 'edit', '_fields' => 'id,name,roles' ), '', '&' ) );
-		}
-		if ( self::supports( $site, 'comments' ) ) {
-			$keys[]     = 'comments';
-			$requests[] = array( 'method' => 'GET', 'path' => '/wp/v2/comments?' . http_build_query( $common + array( 'context' => 'edit', 'status' => 'all', '_fields' => 'id,author_name,content,date,status' ), '', '&' ) );
-		}
-		if ( self::supports( $site, 'media' ) ) {
-			$keys[]     = 'media';
-			$requests[] = array( 'method' => 'GET', 'path' => '/wp/v2/media?' . http_build_query( $common + array( 'context' => 'edit', '_fields' => 'id,title,media_type,mime_type' ), '', '&' ) );
-		}
-		if ( empty( $requests ) ) {
-			return array();
-		}
-		$responses = self::remote_batch( $site, $requests );
-		if ( is_wp_error( $responses ) ) {
-			return $responses;
-		}
-		$named = array();
-		$errors = array();
-		foreach ( $keys as $index => $key ) {
-			$response      = isset( $responses[ $index ] ) && is_array( $responses[ $index ] ) ? $responses[ $index ] : array();
-			$named[ $key ] = isset( $response['body'] ) && is_array( $response['body'] ) ? $response['body'] : array();
-			if ( ! empty( $response['error'] ) ) {
-				$errors[] = sanitize_text_field( $response['error'] );
-			}
-		}
-		if ( count( $errors ) === count( $keys ) ) {
-			return new WP_Error( 'openstation_fleet_search_failed', reset( $errors ) );
-		}
-		return self::normalize_search_results( $named );
+		delete_user_meta( $user->ID, self::USER_META_EVENTS );
+		delete_user_meta( $user->ID, self::USER_META_APP_ID );
+		delete_user_meta( $user->ID, self::USER_META_SITES );
+		return array( 'items_removed' => true, 'items_retained' => false, 'messages' => array(), 'done' => true );
 	}
 
 	/**
@@ -742,117 +303,42 @@ final class OpenStation_Fleet {
 	}
 
 	/**
-	 * Render persistent client groups as one-click OpenStation workspaces.
+	 * Build a bounded local search index from existing Core collections.
 	 *
-	 * @param array $sites Connected sites.
+	 * Fleet searches this cached index instead of opening a synchronous HTTP
+	 * request to every connected site while the user waits.
+	 *
+	 * @param array $site Connected site record.
+	 * @return array Normalized search records.
 	 */
-	private static function render_workspaces_view( $sites ) {
-		$groups = array();
-		foreach ( $sites as $id => $site ) {
-			$client = trim( (string) $site['agency']['client_name'] );
-			$client = '' !== $client ? $client : __( 'Unassigned sites', 'fleet-for-openstation' );
-			if ( ! isset( $groups[ $client ] ) ) {
-				$groups[ $client ] = array();
+	private static function fetch_search_index( $site ) {
+		$paths = array();
+		if ( self::supports( $site, 'search' ) ) {
+			$paths['content'] = 'wp/v2/search?context=edit&per_page=100&_fields=id,title,type,subtype';
+		}
+		if ( self::supports( $site, 'posts' ) ) {
+			$paths['posts'] = 'wp/v2/posts?context=edit&status=any&per_page=100&_fields=id,title,status,type';
+		}
+		if ( self::supports( $site, 'pages' ) ) {
+			$paths['pages'] = 'wp/v2/pages?context=edit&status=any&per_page=100&_fields=id,title,status,type';
+		}
+		if ( self::supports( $site, 'users' ) ) {
+			$paths['users'] = 'wp/v2/users?context=edit&per_page=100&_fields=id,name,roles';
+		}
+		if ( self::supports( $site, 'comments' ) ) {
+			$paths['comments'] = 'wp/v2/comments?context=edit&status=all&per_page=50&_fields=id,author_name,content,status';
+		}
+		if ( empty( $paths ) ) {
+			return array();
+		}
+
+		$results = self::remote_get_map( $site, $paths );
+		foreach ( $results as $key => $result ) {
+			if ( is_wp_error( $result ) ) {
+				$results[ $key ] = array();
 			}
-			$groups[ $client ][ $id ] = $site;
 		}
-		uksort( $groups, 'strnatcasecmp' );
-		?>
-		<section class="fleet-workspaces-view">
-			<div class="fleet-section-heading"><div><span class="fleet-eyebrow"><?php esc_html_e( 'OpenStation window sets', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Client workspaces', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Open every site for a client as a separate, persistent OpenStation window.', 'fleet-for-openstation' ); ?></p></div><span class="fleet-count"><?php echo esc_html( count( $groups ) ); ?></span></div>
-			<?php if ( empty( $groups ) ) : ?>
-				<div class="fleet-empty"><span class="dashicons dashicons-screenoptions" aria-hidden="true"></span><h3><?php esc_html_e( 'No workspaces yet', 'fleet-for-openstation' ); ?></h3><p><?php esc_html_e( 'Connect a site, then give it a client name under Agency to create a reusable workspace.', 'fleet-for-openstation' ); ?></p></div>
-			<?php else : ?>
-				<div class="fleet-workspace-groups">
-					<?php foreach ( $groups as $client => $client_sites ) : ?>
-						<article class="fleet-workspace-group">
-							<header><span class="fleet-workspace-group__icon"><span class="dashicons dashicons-portfolio" aria-hidden="true"></span></span><span><strong><?php echo esc_html( $client ); ?></strong><small><?php printf( esc_html( _n( '%d connected site', '%d connected sites', count( $client_sites ), 'fleet-for-openstation' ) ), esc_html( count( $client_sites ) ) ); ?></small></span></header>
-							<ul><?php foreach ( $client_sites as $site ) : ?><li><span class="fleet-status-dot" aria-hidden="true"></span><?php echo esc_html( $site['name'] ); ?></li><?php endforeach; ?></ul>
-							<button class="button button-primary" type="button" data-fleet-open-workspace><?php esc_html_e( 'Open workspace', 'fleet-for-openstation' ); ?><span class="dashicons dashicons-arrow-right-alt2" aria-hidden="true"></span></button>
-							<div hidden data-fleet-workspace-links>
-								<?php foreach ( $client_sites as $id => $site ) : ?><a href="<?php echo esc_url( self::workspace_url( $id ) ); ?>" target="<?php echo esc_attr( self::site_window_id( $id ) ); ?>" data-fleet-window-id="<?php echo esc_attr( self::site_window_id( $id ) ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>"><?php echo esc_html( $site['name'] ); ?></a><?php endforeach; ?>
-							</div>
-						</article>
-					<?php endforeach; ?>
-				</div>
-			<?php endif; ?>
-		</section>
-		<?php
-	}
-
-	/**
-	 * Start the WordPress Core Application Password approval flow.
-	 */
-	public static function handle_connect() {
-		self::guard_action( 'openstation_fleet_connect' );
-		if ( 'https' !== wp_parse_url( admin_url(), PHP_URL_SCHEME ) ) {
-			self::redirect( 'hub_https_required' );
-		}
-
-		$raw_url  = self::request_string( $_POST, 'site_url' );
-		$site_url = self::normalize_site_url( $raw_url );
-		if ( is_wp_error( $site_url ) ) {
-			self::redirect( 'invalid_url' );
-		}
-		if ( self::is_hub_site( $site_url ) ) {
-			self::redirect( 'self_site' );
-		}
-
-		$discovery = self::discover_site( $site_url );
-		if ( is_wp_error( $discovery ) ) {
-			self::redirect( 'discovery_failed' );
-		}
-		if ( self::is_hub_site( $discovery['site_url'] ) ) {
-			self::redirect( 'self_site' );
-		}
-		$existing_id = self::site_id( $discovery['site_url'] );
-		$sites       = self::get_sites();
-		if ( isset( $sites[ $existing_id ] ) ) {
-			wp_safe_redirect(
-				self::hub_url(
-					array(
-						'fleet_notice'      => 'already_connected',
-						'fleet_launch_site' => $existing_id,
-					)
-				)
-			);
-			exit;
-		}
-		$state    = wp_generate_uuid4();
-		$callback = add_query_arg(
-			array(
-				'action'   => 'openstation_fleet_authorized',
-				'state'    => $state,
-				'_wpnonce' => wp_create_nonce( 'openstation_fleet_authorized_' . $state ),
-			),
-			admin_url( 'admin-post.php' )
-		);
-		$discovery['callback'] = $callback;
-
-		$reject   = add_query_arg( 'rejected', '1', $callback );
-		$app_name = sprintf(
-			/* translators: %s: hostname of the Fleet hub. */
-			__( 'Fleet for OpenStation on %s', 'fleet-for-openstation' ),
-			wp_parse_url( home_url(), PHP_URL_HOST )
-		);
-		$authorize = self::authorization_url(
-			$discovery['authorization_url'],
-			array(
-				'app_name'    => $app_name,
-				'app_id'      => self::get_app_id(),
-				'success_url' => $callback,
-				'reject_url'  => $reject,
-			)
-		);
-
-		set_transient(
-			self::pending_key( get_current_user_id(), $state ),
-			$discovery,
-			10 * MINUTE_IN_SECONDS
-		);
-
-		wp_redirect( $authorize ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- validated same-origin external authorization endpoint.
-		exit;
+		return self::normalize_search_results( $results );
 	}
 
 	/**
@@ -864,9 +350,10 @@ final class OpenStation_Fleet {
 			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
 		}
 
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- State selects the nonce action and is validated before the nonce check.
 		$state = sanitize_text_field( self::request_string( $_GET, 'state' ) );
 		if ( ! wp_is_uuid( $state ) ) {
-			self::redirect( 'authorization_failed' );
+			self::fail_authorization( 'authorization_failed' );
 		}
 		check_admin_referer( 'openstation_fleet_authorized_' . $state );
 
@@ -874,10 +361,10 @@ final class OpenStation_Fleet {
 		$pending = get_transient( $key );
 		delete_transient( $key );
 		if ( ! is_array( $pending ) ) {
-			self::redirect( 'authorization_expired' );
+			self::fail_authorization( 'authorization_expired' );
 		}
 		if ( isset( $_GET['rejected'] ) || 'false' === self::request_string( $_GET, 'success' ) || '' !== self::request_string( $_GET, 'error' ) ) {
-			self::redirect( 'authorization_rejected' );
+			self::fail_authorization( 'authorization_rejected' );
 		}
 		$returned_url = self::normalize_site_url( self::request_string( $_GET, 'site_url' ) );
 		$username     = sanitize_user( self::request_string( $_GET, 'user_login' ), true );
@@ -888,13 +375,13 @@ final class OpenStation_Fleet {
 			'' === $password ||
 			self::url_origin( $returned_url ) !== self::url_origin( $pending['site_url'] )
 		) {
-			self::redirect( 'authorization_failed' );
+			self::fail_authorization( 'authorization_failed' );
 		}
 
 		$sealed = self::seal_secret( $password );
 		$password = null;
 		if ( is_wp_error( $sealed ) ) {
-			self::redirect( 'encryption_failed' );
+			self::fail_authorization( 'encryption_failed' );
 		}
 
 		$site = array(
@@ -912,116 +399,47 @@ final class OpenStation_Fleet {
 
 		$credential = self::remote_request( $site, 'GET', 'wp/v2/users/me/application-passwords/introspect' );
 		if ( is_wp_error( $credential ) || empty( $credential['uuid'] ) ) {
-			self::redirect( 'credential_failed' );
+			self::fail_authorization( 'credential_failed' );
 		}
 		$site['credential_uuid'] = sanitize_text_field( $credential['uuid'] );
-		$site_id          = self::site_id( $returned_url );
-		$sites            = self::get_sites();
-		$sites[ $site_id ] = $site;
-		self::save_sites( $sites );
-		self::record_activity( $site_id, $site, 'connected', __( 'Site connected with WordPress Core.', 'fleet-for-openstation' ) );
-		self::redirect_workspace( 'connected', $site_id, 'overview' );
-	}
-
-	/**
-	 * Finish a newly approved site's setup while the browser shows progress.
-	 */
-	public static function handle_finish_setup() {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_send_json_error( array( 'message' => __( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) ), 403 );
+		$account = self::remote_request( $site, 'GET', 'wp/v2/users/me?context=edit&_fields=id,name,roles,capabilities' );
+		if ( is_wp_error( $account ) || empty( $account['capabilities']['manage_options'] ) ) {
+			self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . rawurlencode( $site['credential_uuid'] ) );
+			self::fail_authorization( 'administrator_required' );
 		}
-		$id = sanitize_key( self::request_string( $_POST, 'site_id' ) );
-		check_ajax_referer( 'openstation_fleet_finish_setup_' . $id );
-		$sites = self::get_sites();
-		if ( '' === $id || ! isset( $sites[ $id ] ) ) {
-			wp_send_json_error( array( 'message' => __( 'That Fleet site does not exist.', 'fleet-for-openstation' ) ), 404 );
+		$site_id = self::site_id( $returned_url );
+		if ( isset( self::get_sites()[ $site_id ] ) ) {
+			self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . rawurlencode( $site['credential_uuid'] ) );
+			self::return_to_openstation();
 		}
-
-		$site   = $sites[ $id ];
-		$result = self::install_openstation( $site );
-		if ( is_wp_error( $result ) ) {
+		$install = self::install_openstation( $site );
+		if ( is_wp_error( $install ) ) {
 			$site['setup_status'] = 'error';
-			$sites[ $id ]         = $site;
-			self::save_sites( $sites );
-			self::record_activity( $id, $site, 'openstation', __( 'Automatic OpenStation installation failed.', 'fleet-for-openstation' ), 'error' );
-			wp_send_json_success(
-				array(
-					'redirect' => self::hub_url( array( 'fleet_notice' => 'connected_install_failed' ) ),
-				)
-			);
+		} else {
+			$site                 = self::refresh_site( $site );
+			$site['setup_status'] = empty( $site['error'] ) ? 'ready' : 'error';
 		}
 
-		$site                 = self::refresh_site( $site );
-		$site['setup_status'] = empty( $site['error'] ) ? 'ready' : 'error';
-		$sites[ $id ]         = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'openstation', empty( $site['error'] ) ? __( 'OpenStation is installed, active, and ready.', 'fleet-for-openstation' ) : __( 'OpenStation was activated, but the first site check failed.', 'fleet-for-openstation' ), empty( $site['error'] ) ? 'success' : 'warning' );
-		wp_send_json_success(
-			array(
-				'redirect' => self::workspace_url( $id, 'overview', empty( $site['error'] ) ? 'connected_ready' : 'check_failed' ),
-			)
-		);
-	}
-
-	/**
-	 * Refresh one site's cached plugin status.
-	 */
-	public static function handle_check() {
-		self::guard_action( 'openstation_fleet_check' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$sites[ $id ]              = self::refresh_site( $site );
-		self::save_sites( $sites );
-		self::record_activity( $id, $sites[ $id ], 'check', empty( $sites[ $id ]['error'] ) ? __( 'Site status refreshed.', 'fleet-for-openstation' ) : __( 'Site check failed.', 'fleet-for-openstation' ), empty( $sites[ $id ]['error'] ) ? 'success' : 'error' );
-		self::redirect( empty( $sites[ $id ]['error'] ) ? 'checked' : 'check_failed' );
-	}
-
-	/**
-	 * Run a safe action across selected connected sites.
-	 */
-	public static function handle_bulk() {
-		self::guard_action( 'openstation_fleet_bulk' );
-		$bulk_action = sanitize_key( self::request_string( $_POST, 'bulk_action' ) );
-		$raw_ids     = isset( $_POST['site_ids'] ) && is_array( $_POST['site_ids'] ) ? wp_unslash( $_POST['site_ids'] ) : array();
-		$site_ids    = array_slice( array_values( array_unique( array_filter( array_map( 'sanitize_key', $raw_ids ) ) ) ), 0, 25 );
-		if ( ! in_array( $bulk_action, array( 'check', 'install' ), true ) || empty( $site_ids ) ) {
-			self::redirect( 'bulk_failed' );
+		if ( ! self::save_site( $site_id, $site ) ) {
+			self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . rawurlencode( $site['credential_uuid'] ) );
+			self::fail_authorization( 'storage_failed' );
 		}
-
-		$sites   = self::get_sites();
-		$failed  = 0;
-		$changed = 0;
-		foreach ( $site_ids as $id ) {
-			if ( ! isset( $sites[ $id ] ) ) {
-				continue;
-			}
-			$site = $sites[ $id ];
-			if ( 'check' === $bulk_action ) {
-				$site = self::refresh_site( $site );
-				$ok   = empty( $site['error'] );
-			} else {
-				$result = self::install_openstation( $site );
-				$ok     = ! is_wp_error( $result );
-			}
-			$sites[ $id ] = $site;
-			if ( $ok ) {
-				++$changed;
-			} else {
-				++$failed;
-			}
-			self::record_activity( $id, $site, 'bulk_' . $bulk_action, $ok ? __( 'Fleet bulk action completed.', 'fleet-for-openstation' ) : __( 'Fleet bulk action failed.', 'fleet-for-openstation' ), $ok ? 'success' : 'error' );
+		self::record_activity( $site_id, $site, 'connected', __( 'Site connected with WordPress Core.', 'fleet-for-openstation' ) );
+		if ( is_wp_error( $install ) || ! empty( $site['error'] ) ) {
+			self::record_activity( $site_id, $site, 'openstation', __( 'The site connected, but automatic OpenStation setup needs attention.', 'fleet-for-openstation' ), 'warning' );
+		} else {
+			self::record_activity( $site_id, $site, 'openstation', __( 'OpenStation is installed, active, and ready.', 'fleet-for-openstation' ) );
 		}
-		self::save_sites( $sites );
-		set_transient( 'openstation_fleet_bulk_' . get_current_user_id(), array( 'changed' => $changed, 'failed' => $failed ), 5 * MINUTE_IN_SECONDS );
-		self::redirect( $failed ? 'bulk_partial' : 'bulk_complete' );
+		self::return_to_openstation();
 	}
-
 	/**
 	 * Install or activate OpenStation without redirecting.
 	 *
 	 * @param array $site Connected site record, updated in place.
-	 * @return true|WP_Error
+	 * @return string|WP_Error Either active or installed on success.
 	 */
 	private static function install_openstation( &$site ) {
+		$site['last_checked'] = time();
 		$plugins = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' );
 		if ( is_wp_error( $plugins ) ) {
 			$site['error'] = $plugins->get_error_message();
@@ -1029,370 +447,21 @@ final class OpenStation_Fleet {
 		}
 		$status = self::inspect_plugins( $plugins );
 		if ( 'active' === $status['status'] ) {
-			$site['openstation']  = $status;
-			$site['error']        = '';
-			$site['last_checked'] = time();
-			return true;
+			$site['openstation'] = $status;
+			$site['error']       = '';
+			return 'active';
 		}
 		$result = 'missing' === $status['status']
 			? self::remote_request( $site, 'POST', 'wp/v2/plugins', array( 'slug' => self::PLUGIN_SLUG, 'status' => 'active' ) )
 			: self::remote_request( $site, 'POST', 'wp/v2/plugins/' . self::PLUGIN_REST_ID, array( 'status' => 'active' ) );
-		$site['last_checked'] = time();
 		if ( is_wp_error( $result ) ) {
 			$site['error'] = $result->get_error_message();
 			return $result;
 		}
 		$site['openstation'] = self::inspect_plugins( array( $result ) );
 		$site['error']       = '';
-		return true;
+		return 'installed';
 	}
-
-	/**
-	 * Save hub-side agency metadata for a connected site.
-	 */
-	public static function handle_update_profile() {
-		self::guard_action( 'openstation_fleet_update_profile' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$plan = sanitize_key( self::request_string( $_POST, 'plan_status' ) );
-		$tags = preg_split( '/[,\r\n]+/', self::request_string( $_POST, 'tags' ) );
-		$site['agency'] = array(
-			'client_name' => sanitize_text_field( self::request_string( $_POST, 'client_name' ) ),
-			'tags'        => array_values( array_unique( array_filter( array_map( 'sanitize_text_field', is_array( $tags ) ? $tags : array() ) ) ) ),
-			'plan_status' => in_array( $plan, array( 'none', 'active', 'paused', 'ended' ), true ) ? $plan : 'none',
-			'notes'       => sanitize_textarea_field( self::request_string( $_POST, 'notes' ) ),
-			'favorite'    => isset( $_POST['favorite'] ),
-		);
-		$sites[ $id ] = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'profile', __( 'Agency profile updated.', 'fleet-for-openstation' ) );
-		self::redirect_workspace( 'profile_updated', $id, 'agency' );
-	}
-
-	/**
-	 * Toggle a site's favorite state from the manifest.
-	 */
-	public static function handle_toggle_favorite() {
-		self::guard_action( 'openstation_fleet_toggle_favorite' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$site['agency']['favorite'] = empty( $site['agency']['favorite'] );
-		$sites[ $id ]               = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'favorite', $site['agency']['favorite'] ? __( 'Site added to favorites.', 'fleet-for-openstation' ) : __( 'Site removed from favorites.', 'fleet-for-openstation' ) );
-		self::redirect( 'profile_updated' );
-	}
-
-	/**
-	 * Install or activate OpenStation using the Core Plugins REST API.
-	 */
-	public static function handle_install() {
-		self::guard_action( 'openstation_fleet_install' );
-		list( $id, $site, $sites ) = self::requested_site();
-
-		$plugins = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' );
-		if ( is_wp_error( $plugins ) ) {
-			$site['error']        = $plugins->get_error_message();
-			$site['last_checked'] = time();
-			$sites[ $id ]         = $site;
-			self::save_sites( $sites );
-			self::redirect( 'install_failed' );
-		}
-
-		$status = self::inspect_plugins( $plugins );
-		if ( 'active' === $status['status'] ) {
-			$site['openstation']  = $status;
-			$site['error']        = '';
-			$site['last_checked'] = time();
-			$sites[ $id ]         = $site;
-			self::save_sites( $sites );
-			self::redirect( 'already_active' );
-		}
-
-		if ( 'missing' === $status['status'] ) {
-			$result = self::remote_request(
-				$site,
-				'POST',
-				'wp/v2/plugins',
-				array(
-					'slug'   => self::PLUGIN_SLUG,
-					'status' => 'active',
-				)
-			);
-		} else {
-			$result = self::remote_request(
-				$site,
-				'POST',
-				'wp/v2/plugins/' . self::PLUGIN_REST_ID,
-				array( 'status' => 'active' )
-			);
-		}
-
-		if ( is_wp_error( $result ) ) {
-			$site['error'] = $result->get_error_message();
-			$notice        = 'install_failed';
-		} else {
-			$site['openstation'] = self::inspect_plugins( array( $result ) );
-			$site['error']       = '';
-			$notice              = 'installed';
-		}
-		$site['last_checked'] = time();
-		$sites[ $id ]         = $site;
-		self::save_sites( $sites );
-		self::record_activity(
-			$id,
-			$site,
-			'openstation',
-			is_wp_error( $result ) ? __( 'OpenStation installation failed.', 'fleet-for-openstation' ) : __( 'OpenStation installed and activated.', 'fleet-for-openstation' ),
-			is_wp_error( $result ) ? 'error' : 'success'
-		);
-		self::redirect( $notice );
-	}
-
-	/**
-	 * Update a connected site's Core WordPress settings.
-	 */
-	public static function handle_update_settings() {
-		self::guard_action( 'openstation_fleet_update_settings' );
-		list( $id, $site, $sites ) = self::requested_site();
-
-		$settings = array(
-			'title'           => sanitize_text_field( self::request_string( $_POST, 'title' ) ),
-			'description'     => sanitize_text_field( self::request_string( $_POST, 'description' ) ),
-			'timezone_string' => sanitize_text_field( self::request_string( $_POST, 'timezone_string' ) ),
-			'date_format'     => sanitize_text_field( self::request_string( $_POST, 'date_format' ) ),
-			'time_format'     => sanitize_text_field( self::request_string( $_POST, 'time_format' ) ),
-			'start_of_week'   => absint( self::request_string( $_POST, 'start_of_week' ) ),
-		);
-		$result   = self::remote_request( $site, 'POST', 'wp/v2/settings', $settings );
-
-		if ( is_wp_error( $result ) ) {
-			$site['error'] = $result->get_error_message();
-			$notice        = 'settings_failed';
-		} else {
-			$site['name']  = '' !== $settings['title'] ? $settings['title'] : $site['name'];
-			$site['error'] = '';
-			$notice        = 'settings_updated';
-		}
-		$sites[ $id ] = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'settings', is_wp_error( $result ) ? __( 'Remote settings update failed.', 'fleet-for-openstation' ) : __( 'Remote site settings updated.', 'fleet-for-openstation' ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( $notice, $id, 'settings' );
-	}
-
-	/**
-	 * Update a post or page on a connected site through Core REST.
-	 */
-	public static function handle_update_content() {
-		self::guard_action( 'openstation_fleet_update_content' );
-		list( $id, $site, $sites ) = self::requested_site();
-
-		$content_type = sanitize_key( self::request_string( $_POST, 'content_type' ) );
-		$content_id   = absint( self::request_string( $_POST, 'content_id' ) );
-		$status       = sanitize_key( self::request_string( $_POST, 'status' ) );
-		$title        = sanitize_text_field( self::request_string( $_POST, 'title' ) );
-		$allowed      = in_array( $content_type, array( 'posts', 'pages' ), true )
-			&& $content_id > 0
-			&& in_array( $status, array( 'publish', 'draft', 'pending', 'future', 'private', 'trash' ), true );
-
-		if ( ! $allowed ) {
-			self::redirect_workspace( 'content_failed', $id, 'content' );
-		}
-
-		$result = self::remote_request(
-			$site,
-			'POST',
-			'wp/v2/' . $content_type . '/' . $content_id,
-			array(
-				'title'  => $title,
-				'status' => $status,
-			)
-		);
-		if ( is_wp_error( $result ) ) {
-			$site['error'] = $result->get_error_message();
-			$notice        = 'content_failed';
-		} else {
-			$site['error'] = '';
-			$notice        = 'content_updated';
-		}
-		$sites[ $id ] = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'content', is_wp_error( $result ) ? __( 'Remote content update failed.', 'fleet-for-openstation' ) : sprintf( __( '%s #%d updated.', 'fleet-for-openstation' ), ucfirst( $content_type ), $content_id ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( $notice, $id, 'content' );
-	}
-
-	/**
-	 * Activate or deactivate an installed plugin on a connected site.
-	 */
-	public static function handle_update_plugin() {
-		self::guard_action( 'openstation_fleet_update_plugin' );
-		list( $id, $site, $sites ) = self::requested_site();
-
-		$plugin = self::request_string( $_POST, 'plugin' );
-		$status = sanitize_key( self::request_string( $_POST, 'status' ) );
-		if ( ! preg_match( '#^[a-z0-9._-]+(?:/[a-z0-9._-]+)?$#i', $plugin ) || ! in_array( $status, array( 'active', 'inactive' ), true ) ) {
-			self::redirect_workspace( 'plugin_failed', $id, 'plugins' );
-		}
-
-		$route  = implode( '/', array_map( 'rawurlencode', explode( '/', $plugin ) ) );
-		$result = self::remote_request( $site, 'POST', 'wp/v2/plugins/' . $route, array( 'status' => $status ) );
-		if ( is_wp_error( $result ) ) {
-			$site['error'] = $result->get_error_message();
-			$notice        = 'plugin_failed';
-		} else {
-			$site['error'] = '';
-			$notice        = 'plugin_updated';
-			if ( self::PLUGIN_REST_ID === $plugin ) {
-				$site['openstation'] = self::inspect_plugins( array( $result ) );
-			}
-		}
-		$site['last_checked'] = time();
-		$sites[ $id ]         = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'plugin', is_wp_error( $result ) ? __( 'Remote plugin change failed.', 'fleet-for-openstation' ) : sprintf( __( '%1$s set to %2$s.', 'fleet-for-openstation' ), $plugin, $status ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( $notice, $id, 'plugins' );
-	}
-
-	/**
-	 * Install a WordPress.org plugin through the Core Plugins endpoint.
-	 */
-	public static function handle_install_plugin() {
-		self::guard_action( 'openstation_fleet_install_plugin' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$slug   = sanitize_key( self::request_string( $_POST, 'plugin_slug' ) );
-		$status = sanitize_key( self::request_string( $_POST, 'status' ) );
-		if ( ! preg_match( '/^[a-z0-9][a-z0-9._-]*$/', $slug ) || ! in_array( $status, array( 'active', 'inactive' ), true ) ) {
-			self::redirect_workspace( 'plugin_install_failed', $id, 'plugins' );
-		}
-		$result = self::remote_request( $site, 'POST', 'wp/v2/plugins', array( 'slug' => $slug, 'status' => $status ) );
-		if ( is_wp_error( $result ) ) {
-			$site['error'] = $result->get_error_message();
-			$notice        = 'plugin_install_failed';
-		} else {
-			$site['error'] = '';
-			$notice        = 'plugin_installed';
-			if ( self::PLUGIN_SLUG === $slug ) {
-				$site['openstation'] = self::inspect_plugins( array( $result ) );
-			}
-		}
-		$site['last_checked'] = time();
-		$sites[ $id ]         = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'plugin_install', is_wp_error( $result ) ? sprintf( __( 'Plugin %s could not be installed.', 'fleet-for-openstation' ), $slug ) : sprintf( __( 'Plugin %s installed.', 'fleet-for-openstation' ), $slug ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( $notice, $id, 'plugins' );
-	}
-
-	/**
-	 * Moderate a remote comment through Core REST.
-	 */
-	public static function handle_update_comment() {
-		self::guard_action( 'openstation_fleet_update_comment' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$comment_id = absint( self::request_string( $_POST, 'comment_id' ) );
-		$status     = sanitize_key( self::request_string( $_POST, 'status' ) );
-		if ( $comment_id < 1 || ! in_array( $status, array( 'approved', 'hold', 'spam', 'trash' ), true ) ) {
-			self::redirect_workspace( 'comment_failed', $id, 'comments' );
-		}
-		$result        = self::remote_request( $site, 'POST', 'wp/v2/comments/' . $comment_id, array( 'status' => $status ) );
-		$site['error'] = is_wp_error( $result ) ? $result->get_error_message() : '';
-		$sites[ $id ]  = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'comment', is_wp_error( $result ) ? __( 'Comment moderation failed.', 'fleet-for-openstation' ) : sprintf( __( 'Comment moved to %s.', 'fleet-for-openstation' ), $status ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( is_wp_error( $result ) ? 'comment_failed' : 'comment_updated', $id, 'comments' );
-	}
-
-	/**
-	 * Update remote media metadata.
-	 */
-	public static function handle_update_media() {
-		self::guard_action( 'openstation_fleet_update_media' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$media_id = absint( self::request_string( $_POST, 'media_id' ) );
-		if ( $media_id < 1 ) {
-			self::redirect_workspace( 'media_failed', $id, 'media' );
-		}
-		$result = self::remote_request(
-			$site,
-			'POST',
-			'wp/v2/media/' . $media_id,
-			array(
-				'title'    => sanitize_text_field( self::request_string( $_POST, 'title' ) ),
-				'alt_text' => sanitize_text_field( self::request_string( $_POST, 'alt_text' ) ),
-				'caption'  => sanitize_textarea_field( self::request_string( $_POST, 'caption' ) ),
-			)
-		);
-		$site['error'] = is_wp_error( $result ) ? $result->get_error_message() : '';
-		$sites[ $id ]  = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'media', is_wp_error( $result ) ? __( 'Media update failed.', 'fleet-for-openstation' ) : __( 'Media details updated.', 'fleet-for-openstation' ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( is_wp_error( $result ) ? 'media_failed' : 'media_updated', $id, 'media' );
-	}
-
-	/**
-	 * Upload a file directly from the hub request to the managed Media Library.
-	 */
-	public static function handle_upload_media() {
-		self::guard_action( 'openstation_fleet_upload_media' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$file = isset( $_FILES['media_file'] ) && is_array( $_FILES['media_file'] ) ? $_FILES['media_file'] : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- validated below before reading.
-		if ( empty( $file['tmp_name'] ) || ! is_uploaded_file( $file['tmp_name'] ) || ! empty( $file['error'] ) || empty( $file['size'] ) || (int) $file['size'] > 10 * MB_IN_BYTES ) {
-			self::redirect_workspace( 'media_upload_failed', $id, 'media' );
-		}
-		$filename = sanitize_file_name( isset( $file['name'] ) ? wp_unslash( $file['name'] ) : '' );
-		$type     = wp_check_filetype_and_ext( $file['tmp_name'], $filename );
-		$mime     = ! empty( $type['type'] ) ? $type['type'] : '';
-		if ( '' === $filename || ! preg_match( '#^(image|audio|video)/|^application/pdf$#', $mime ) ) {
-			self::redirect_workspace( 'media_upload_failed', $id, 'media' );
-		}
-		$result        = self::remote_upload( $site, $file['tmp_name'], $filename, $mime );
-		$site['error'] = is_wp_error( $result ) ? $result->get_error_message() : '';
-		$sites[ $id ]  = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'media_upload', is_wp_error( $result ) ? __( 'Media upload failed.', 'fleet-for-openstation' ) : sprintf( __( '%s uploaded to the Media Library.', 'fleet-for-openstation' ), $filename ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( is_wp_error( $result ) ? 'media_upload_failed' : 'media_uploaded', $id, 'media' );
-	}
-
-	/**
-	 * Create a remote WordPress user.
-	 */
-	public static function handle_create_user() {
-		self::guard_action( 'openstation_fleet_create_user' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$username = sanitize_user( self::request_string( $_POST, 'username' ), true );
-		$email    = sanitize_email( self::request_string( $_POST, 'email' ) );
-		$password = self::request_string( $_POST, 'password' );
-		$role     = sanitize_key( self::request_string( $_POST, 'role' ) );
-		if ( '' === $username || ! is_email( $email ) || strlen( $password ) < 12 || ! in_array( $role, self::editable_roles(), true ) ) {
-			self::redirect_workspace( 'user_failed', $id, 'users' );
-		}
-		$result   = self::remote_request( $site, 'POST', 'wp/v2/users', array( 'username' => $username, 'email' => $email, 'password' => $password, 'roles' => array( $role ) ) );
-		$password = null;
-		$site['error'] = is_wp_error( $result ) ? $result->get_error_message() : '';
-		$sites[ $id ]  = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'user_create', is_wp_error( $result ) ? __( 'User creation failed.', 'fleet-for-openstation' ) : sprintf( __( 'User %s created.', 'fleet-for-openstation' ), $username ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( is_wp_error( $result ) ? 'user_failed' : 'user_created', $id, 'users' );
-	}
-
-	/**
-	 * Update a remote user's display name, email, and role.
-	 */
-	public static function handle_update_user() {
-		self::guard_action( 'openstation_fleet_update_user' );
-		list( $id, $site, $sites ) = self::requested_site();
-		$user_id = absint( self::request_string( $_POST, 'user_id' ) );
-		$name    = sanitize_text_field( self::request_string( $_POST, 'name' ) );
-		$email   = sanitize_email( self::request_string( $_POST, 'email' ) );
-		$role    = sanitize_key( self::request_string( $_POST, 'role' ) );
-		if ( $user_id < 1 || '' === $name || ! is_email( $email ) || ! in_array( $role, self::editable_roles(), true ) ) {
-			self::redirect_workspace( 'user_failed', $id, 'users' );
-		}
-		$result        = self::remote_request( $site, 'POST', 'wp/v2/users/' . $user_id, array( 'name' => $name, 'email' => $email, 'roles' => array( $role ) ) );
-		$site['error'] = is_wp_error( $result ) ? $result->get_error_message() : '';
-		$sites[ $id ]  = $site;
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'user_update', is_wp_error( $result ) ? __( 'User update failed.', 'fleet-for-openstation' ) : sprintf( __( 'User #%d updated.', 'fleet-for-openstation' ), $user_id ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( is_wp_error( $result ) ? 'user_failed' : 'user_updated', $id, 'users' );
-	}
-
 	/**
 	 * Roles Fleet exposes in the focused user interface.
 	 *
@@ -1401,67 +470,495 @@ final class OpenStation_Fleet {
 	private static function editable_roles() {
 		return array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' );
 	}
-
 	/**
-	 * Run an advanced request against any REST route on the connected site.
+	 * Keep API Explorer requests inside the discovered REST base path.
+	 *
+	 * @param string $route User-entered REST route.
+	 * @return bool
 	 */
-	public static function handle_api_request() {
-		self::guard_action( 'openstation_fleet_api_request' );
-		list( $id, $site, $sites ) = self::requested_site();
-
-		$method = strtoupper( sanitize_key( self::request_string( $_POST, 'api_method' ) ) );
-		$route  = trim( self::request_string( $_POST, 'api_route' ) );
-		$raw    = trim( self::request_string( $_POST, 'api_body' ) );
+	private static function is_safe_api_route( $route ) {
+		$route = trim( (string) $route );
 		if (
-			! in_array( $method, array( 'GET', 'POST', 'PUT', 'PATCH', 'DELETE' ), true )
-			|| '' === $route
+			'' === $route
 			|| false !== strpos( $route, '://' )
 			|| 0 === strpos( $route, '//' )
+			|| false !== strpos( $route, '\\' )
+			|| false !== strpos( $route, '#' )
+			|| preg_match( '/[\x00-\x1F\x7F]/', $route )
 		) {
-			self::redirect_workspace( 'api_failed', $id, 'api' );
+			return false;
 		}
 
-		$body = null;
-		if ( '' !== $raw ) {
-			$body = json_decode( $raw, true );
-			if ( JSON_ERROR_NONE !== json_last_error() || ! is_array( $body ) ) {
-				self::store_api_result( $id, new WP_Error( 'openstation_fleet_invalid_json', __( 'The request body must be a JSON object or array.', 'fleet-for-openstation' ) ) );
-				self::redirect_workspace( 'api_failed', $id, 'api' );
+		$path = rawurldecode( explode( '?', ltrim( $route, '/' ), 2 )[0] );
+		if ( false !== strpos( $path, '\\' ) ) {
+			return false;
+		}
+		foreach ( explode( '/', $path ) as $segment ) {
+			if ( '.' === $segment || '..' === $segment ) {
+				return false;
+			}
+		}
+		return '' !== $path;
+	}
+	/**
+	 * Return the safe, presentation-ready hub model used by the App Framework.
+	 * Secrets and credential identifiers deliberately never cross this boundary.
+	 *
+	 * @param string $view  Hub view.
+	 * @param string $query Optional cross-site search query.
+	 * @return array
+	 */
+	public static function app_hub_data( $view = 'sites', $query = '' ) {
+		$view  = in_array( $view, array( 'sites', 'inbox', 'search', 'workspaces', 'activity' ), true ) ? $view : 'sites';
+		$query = sanitize_text_field( (string) $query );
+		$sites = self::get_sites();
+		$model = array(
+			'sites'      => array(),
+			'activity'   => 'activity' === $view ? self::get_activity() : array(),
+			'workspaces' => array(),
+			'search'     => array(),
+			'counts'     => array(
+				'sites'     => count( $sites ),
+				'healthy'   => 0,
+				'attention' => 0,
+				'inbox'     => 0,
+			),
+		);
+
+		foreach ( $sites as $id => $site ) {
+			$attention = self::attention_reasons( $site );
+			$inbox     = self::inbox_item_count( $site );
+			$status    = isset( $site['openstation']['status'] ) ? sanitize_key( $site['openstation']['status'] ) : 'unknown';
+			$agency    = isset( $site['agency'] ) && is_array( $site['agency'] ) ? $site['agency'] : array();
+			$client    = ! empty( $agency['client_name'] ) ? sanitize_text_field( $agency['client_name'] ) : __( 'Unassigned sites', 'fleet-for-openstation' );
+			$item      = array(
+				'id'                => sanitize_key( $id ),
+				'name'              => sanitize_text_field( isset( $site['name'] ) ? $site['name'] : $site['site_url'] ),
+				'url'               => esc_url_raw( $site['site_url'] ),
+				'host'              => sanitize_text_field( (string) wp_parse_url( $site['site_url'], PHP_URL_HOST ) ),
+				'user'              => sanitize_user( isset( $site['user_login'] ) ? $site['user_login'] : '', true ),
+				'wordpress_version' => sanitize_text_field( isset( $site['wordpress_version'] ) ? $site['wordpress_version'] : '' ),
+				'openstation'       => $status,
+				'setup_status'      => sanitize_key( isset( $site['setup_status'] ) ? $site['setup_status'] : 'ready' ),
+				'last_checked'      => absint( isset( $site['last_checked'] ) ? $site['last_checked'] : 0 ),
+				'error'             => sanitize_text_field( isset( $site['error'] ) ? $site['error'] : '' ),
+				'attention'         => $attention,
+				'inbox'             => isset( $site['inbox'] ) ? self::normalize_inbox_summary( $site['inbox'] ) : self::empty_inbox_summary(),
+				'inbox_count'       => $inbox,
+				'agency'            => array(
+					'client_name' => ! empty( $agency['client_name'] ) ? sanitize_text_field( $agency['client_name'] ) : '',
+					'tags'        => ! empty( $agency['tags'] ) && is_array( $agency['tags'] ) ? array_values( array_map( 'sanitize_text_field', $agency['tags'] ) ) : array(),
+					'plan_status' => sanitize_key( isset( $agency['plan_status'] ) ? $agency['plan_status'] : 'none' ),
+					'favorite'    => ! empty( $agency['favorite'] ),
+				),
+			);
+			$model['sites'][] = $item;
+			if ( empty( $item['error'] ) && 'active' === $status ) {
+				++$model['counts']['healthy'];
+			}
+			if ( ! empty( $attention ) ) {
+				++$model['counts']['attention'];
+			}
+			$model['counts']['inbox'] += $inbox;
+			if ( ! isset( $model['workspaces'][ $client ] ) ) {
+				$model['workspaces'][ $client ] = array();
+			}
+			$model['workspaces'][ $client ][] = $item;
+		}
+
+		usort(
+			$model['sites'],
+			static function ( $a, $b ) {
+				if ( $a['agency']['favorite'] !== $b['agency']['favorite'] ) {
+					return $a['agency']['favorite'] ? -1 : 1;
+				}
+				return strnatcasecmp( $a['name'], $b['name'] );
+			}
+		);
+		uksort( $model['workspaces'], 'strnatcasecmp' );
+
+		if ( 'search' === $view && strlen( $query ) >= 2 ) {
+			$needle = function_exists( 'mb_strtolower' ) ? mb_strtolower( $query ) : strtolower( $query );
+			foreach ( $sites as $id => $site ) {
+				$results = array_filter(
+					isset( $site['search_index'] ) && is_array( $site['search_index'] ) ? $site['search_index'] : array(),
+					static function ( $item ) use ( $needle ) {
+						$text = isset( $item['title'], $item['meta'] ) ? $item['title'] . ' ' . $item['meta'] : '';
+						$text = function_exists( 'mb_strtolower' ) ? mb_strtolower( $text ) : strtolower( $text );
+						return false !== strpos( $text, $needle );
+					}
+				);
+				$model['search'][] = array(
+					'site_id'   => sanitize_key( $id ),
+					'site_name' => sanitize_text_field( $site['name'] ),
+					'items'     => array_slice( array_values( $results ), 0, 24 ),
+					'error'     => '',
+				);
 			}
 		}
 
-		$result       = self::remote_request( $site, $method, ltrim( $route, '/' ), $body );
-		$site['error'] = is_wp_error( $result ) ? $result->get_error_message() : '';
-		$sites[ $id ]  = $site;
-		self::save_sites( $sites );
-		self::store_api_result( $id, $result, $method, $route );
-		self::record_activity( $id, $site, 'api', is_wp_error( $result ) ? sprintf( __( '%1$s /%2$s failed.', 'fleet-for-openstation' ), $method, ltrim( $route, '/' ) ) : sprintf( __( '%1$s /%2$s completed.', 'fleet-for-openstation' ), $method, ltrim( $route, '/' ) ), is_wp_error( $result ) ? 'error' : 'success' );
-		self::redirect_workspace( is_wp_error( $result ) ? 'api_failed' : 'api_complete', $id, 'api' );
+		return $model;
 	}
 
 	/**
-	 * Revoke the remote Application Password before forgetting the site.
+	 * Return one connected site's safe record for framework window setup.
+	 *
+	 * @param string $id Site id.
+	 * @return array|WP_Error
 	 */
-	public static function handle_disconnect() {
-		self::guard_action( 'openstation_fleet_disconnect' );
-		list( $id, $site, $sites ) = self::requested_site();
-
-		$uuid = isset( $site['credential_uuid'] ) ? rawurlencode( $site['credential_uuid'] ) : '';
-		if ( '' === $uuid ) {
-			self::redirect( 'disconnect_failed' );
+	public static function app_site( $id ) {
+		$id    = sanitize_key( $id );
+		$sites = self::get_sites();
+		if ( '' === $id || ! isset( $sites[ $id ] ) ) {
+			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
 		}
-		$revoked = self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . $uuid );
-		if ( is_wp_error( $revoked ) ) {
-			$site['error'] = $revoked->get_error_message();
-			$sites[ $id ]  = $site;
-			self::save_sites( $sites );
-			self::redirect( 'disconnect_failed' );
+		$site = $sites[ $id ];
+		return array(
+			'id'                => $id,
+			'name'              => sanitize_text_field( $site['name'] ),
+			'url'               => esc_url_raw( $site['site_url'] ),
+			'host'              => sanitize_text_field( (string) wp_parse_url( $site['site_url'], PHP_URL_HOST ) ),
+			'user'              => sanitize_user( $site['user_login'], true ),
+			'wordpress_version' => sanitize_text_field( isset( $site['wordpress_version'] ) ? $site['wordpress_version'] : '' ),
+			'environment'       => isset( $site['environment'] ) && is_array( $site['environment'] ) ? $site['environment'] : array(),
+			'openstation'       => isset( $site['openstation'] ) && is_array( $site['openstation'] ) ? $site['openstation'] : array( 'status' => 'unknown' ),
+			'setup_status'      => sanitize_key( isset( $site['setup_status'] ) ? $site['setup_status'] : 'ready' ),
+			'last_checked'      => absint( isset( $site['last_checked'] ) ? $site['last_checked'] : 0 ),
+			'error'             => sanitize_text_field( isset( $site['error'] ) ? $site['error'] : '' ),
+			'attention'         => self::attention_reasons( $site ),
+			'capabilities'      => isset( $site['capabilities'] ) && is_array( $site['capabilities'] ) ? $site['capabilities'] : array(),
+			'agency'            => $site['agency'],
+		);
+	}
+
+	/**
+	 * Load the remote data required by one native managed-site tab.
+	 *
+	 * @param string $id      Site id.
+	 * @param string $section App tab slug.
+	 * @return array|WP_Error
+	 */
+	public static function app_site_data( $id, $section ) {
+		$id      = sanitize_key( $id );
+		$section = sanitize_key( $section );
+		$sites   = self::get_sites();
+		if ( '' === $id || ! isset( $sites[ $id ] ) ) {
+			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
+		}
+		$site = $sites[ $id ];
+		if ( 'agency' === $section ) {
+			return array( 'agency' => $site['agency'], 'attention' => self::attention_reasons( $site ) );
 		}
 
-		unset( $sites[ $id ] );
-		self::save_sites( $sites );
-		self::record_activity( $id, $site, 'disconnected', __( 'Remote authorization revoked and site disconnected.', 'fleet-for-openstation' ) );
-		self::redirect( 'disconnected' );
+		switch ( $section ) {
+			case 'content':
+				return self::remote_get_map(
+					$site,
+					array(
+						'posts' => 'wp/v2/posts?context=edit&status=any&per_page=30&orderby=modified&order=desc&_fields=id,title,status,modified,type',
+						'pages' => 'wp/v2/pages?context=edit&status=any&per_page=30&orderby=modified&order=desc&_fields=id,title,status,modified,type',
+					)
+				);
+			case 'media':
+				return array( 'media' => self::remote_request( $site, 'GET', 'wp/v2/media?context=edit&per_page=30&orderby=date&order=desc&_fields=id,title,alt_text,caption,media_type,mime_type,source_url,date' ) );
+			case 'comments':
+				return array( 'comments' => self::remote_request( $site, 'GET', 'wp/v2/comments?context=edit&status=all&per_page=50&orderby=date&order=desc&_fields=id,author_name,content,date,status,post' ) );
+			case 'plugins':
+				return array( 'plugins' => self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' ) );
+			case 'users':
+				return array( 'users' => self::remote_request( $site, 'GET', 'wp/v2/users?context=edit&per_page=100&orderby=name&_fields=id,username,name,email,roles,avatar_urls' ) );
+			case 'settings':
+				return array( 'settings' => self::remote_request( $site, 'GET', 'wp/v2/settings?context=edit' ) );
+			case 'design':
+				$design = self::remote_get_map(
+					$site,
+					array(
+						'themes'         => 'wp/v2/themes?context=edit&status=active&_fields=stylesheet,name,status,version',
+						'templates'      => 'wp/v2/templates?context=edit&per_page=30&_fields=id,slug,title,theme,modified,status',
+						'template_parts' => 'wp/v2/template-parts?context=edit&per_page=30&_fields=id,slug,title,area,theme,modified,status',
+						'navigation'     => 'wp/v2/navigation?context=edit&per_page=30&_fields=id,title,status,modified',
+						'font_families'  => 'wp/v2/font-families?context=edit&per_page=30&_fields=id,name,slug,font_face',
+						'patterns'       => 'wp/v2/blocks?context=edit&per_page=30&_fields=id,title,status,modified',
+					)
+				);
+				$themes = isset( $design['themes'] ) && is_array( $design['themes'] ) ? $design['themes'] : array();
+				if ( ! empty( $themes[0]['stylesheet'] ) ) {
+					$design['global_styles'] = self::remote_request( $site, 'GET', 'wp/v2/global-styles/themes/' . rawurlencode( $themes[0]['stylesheet'] ) );
+				}
+				return $design;
+			case 'api':
+				$root      = self::remote_request( $site, 'GET', '' );
+				$namespaces = isset( $site['capabilities']['namespaces'] ) && is_array( $site['capabilities']['namespaces'] ) ? $site['capabilities']['namespaces'] : array();
+				$abilities = in_array( 'wp-abilities/v1', $namespaces, true )
+					? self::remote_request( $site, 'GET', 'wp-abilities/v1/abilities?per_page=100&_fields=name,label,description,category,input_schema,output_schema,meta' )
+					: new WP_Error( 'openstation_fleet_abilities_unavailable', __( 'This site does not expose the WordPress Abilities API.', 'fleet-for-openstation' ) );
+				return array(
+					'catalog'   => is_wp_error( $root ) ? $root : self::api_route_catalog( $root ),
+					'abilities' => $abilities,
+				);
+			case 'overview':
+			default:
+				return self::remote_get_map(
+					$site,
+					array(
+						'settings' => 'wp/v2/settings?context=edit&_fields=title,description,timezone_string,date_format,time_format,start_of_week',
+						'posts'    => 'wp/v2/posts?context=edit&status=any&per_page=5&orderby=modified&order=desc&_fields=id,title,status,modified,type',
+						'pages'    => 'wp/v2/pages?context=edit&status=any&per_page=5&orderby=modified&order=desc&_fields=id,title,status,modified,type',
+					)
+				);
+		}
+	}
+
+	/**
+	 * Prepare the Core Application Password approval URL for a native app.
+	 *
+	 * @param string $raw_url User-entered managed-site URL.
+	 * @return array|WP_Error Authorization URL, or an existing site id.
+	 */
+	public static function app_connect( $raw_url ) {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			return new WP_Error( 'openstation_fleet_forbidden', __( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
+		}
+		if ( 'https' !== wp_parse_url( admin_url(), PHP_URL_SCHEME ) ) {
+			return new WP_Error( 'openstation_fleet_https_required', __( 'The Fleet hub must use HTTPS before it can connect sites.', 'fleet-for-openstation' ) );
+		}
+		$site_url = self::normalize_site_url( $raw_url );
+		if ( is_wp_error( $site_url ) ) {
+			return $site_url;
+		}
+		if ( self::is_hub_site( $site_url ) ) {
+			return new WP_Error( 'openstation_fleet_self_site', __( 'The Fleet hub cannot connect to itself.', 'fleet-for-openstation' ) );
+		}
+		$discovery = self::discover_site( $site_url );
+		if ( is_wp_error( $discovery ) ) {
+			return $discovery;
+		}
+		$id    = self::site_id( $discovery['site_url'] );
+		$sites = self::get_sites();
+		if ( isset( $sites[ $id ] ) ) {
+			return array( 'site_id' => $id, 'authorization_url' => '' );
+		}
+		$state    = wp_generate_uuid4();
+		$callback = add_query_arg(
+			array(
+				'action'   => 'openstation_fleet_authorized',
+				'state'    => $state,
+				'_wpnonce' => wp_create_nonce( 'openstation_fleet_authorized_' . $state ),
+			),
+			admin_url( 'admin-post.php' )
+		);
+		$discovery['callback'] = $callback;
+		set_transient( self::pending_key( get_current_user_id(), $state ), $discovery, 10 * MINUTE_IN_SECONDS );
+		return array(
+			'site_id'           => '',
+			'authorization_url' => self::authorization_url(
+				$discovery['authorization_url'],
+				array(
+					// translators: %s: Fleet hub hostname.
+					'app_name'    => sprintf( __( 'Fleet for OpenStation on %s', 'fleet-for-openstation' ), wp_parse_url( home_url(), PHP_URL_HOST ) ),
+					'app_id'      => self::get_app_id(),
+					'success_url' => $callback,
+					'reject_url'  => add_query_arg( 'rejected', '1', $callback ),
+				)
+			),
+		);
+	}
+
+	/**
+	 * Run a validated framework action against local Fleet state or Core REST.
+	 *
+	 * @param string $id     Site id.
+	 * @param string $action Action name.
+	 * @param array  $values Untrusted action values.
+	 * @return array|WP_Error
+	 */
+	public static function app_action( $id, $action, $values = array() ) {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			return new WP_Error( 'openstation_fleet_forbidden', __( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
+		}
+		$id     = sanitize_key( $id );
+		$action = sanitize_key( $action );
+		$values = is_array( $values ) ? $values : array();
+		$sites  = self::get_sites();
+		if ( '' === $id || ! isset( $sites[ $id ] ) ) {
+			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
+		}
+		$site    = $sites[ $id ];
+		$result  = array( 'ok' => true );
+		$message = '';
+		$status  = 'success';
+		$local_fields = array();
+
+		switch ( $action ) {
+			case 'refresh':
+				$site    = self::refresh_site( $site );
+				$result  = empty( $site['error'] ) ? array( 'ok' => true ) : new WP_Error( 'openstation_fleet_check_failed', $site['error'] );
+				$message = is_wp_error( $result ) ? __( 'Site check failed.', 'fleet-for-openstation' ) : __( 'Site status refreshed.', 'fleet-for-openstation' );
+				break;
+			case 'finish-setup':
+			case 'install-openstation':
+				$result = self::install_openstation( $site );
+				if ( ! is_wp_error( $result ) ) {
+					$site                 = self::refresh_site( $site );
+					$site['setup_status'] = empty( $site['error'] ) ? 'ready' : 'error';
+					$result                = empty( $site['error'] ) ? array( 'ok' => true ) : new WP_Error( 'openstation_fleet_check_failed', $site['error'] );
+				} else {
+					$site['setup_status'] = 'error';
+				}
+				$message = is_wp_error( $result ) ? __( 'OpenStation installation failed.', 'fleet-for-openstation' ) : __( 'OpenStation is installed, active, and ready.', 'fleet-for-openstation' );
+				break;
+			case 'favorite':
+				$site['agency']['favorite'] = empty( $site['agency']['favorite'] );
+				$local_fields[] = 'agency';
+				$message = $site['agency']['favorite'] ? __( 'Site added to favorites.', 'fleet-for-openstation' ) : __( 'Site removed from favorites.', 'fleet-for-openstation' );
+				break;
+			case 'settings':
+				$body = array(
+					'title'           => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ),
+					'description'     => sanitize_text_field( isset( $values['description'] ) ? $values['description'] : '' ),
+					'timezone_string' => sanitize_text_field( isset( $values['timezone_string'] ) ? $values['timezone_string'] : '' ),
+					'date_format'     => sanitize_text_field( isset( $values['date_format'] ) ? $values['date_format'] : '' ),
+					'time_format'     => sanitize_text_field( isset( $values['time_format'] ) ? $values['time_format'] : '' ),
+					'start_of_week'   => min( 6, absint( isset( $values['start_of_week'] ) ? $values['start_of_week'] : 0 ) ),
+				);
+				$result = self::remote_request( $site, 'POST', 'wp/v2/settings', $body );
+				if ( ! is_wp_error( $result ) && '' !== $body['title'] ) {
+					$site['name'] = $body['title'];
+					$local_fields[] = 'name';
+				}
+				$message = __( 'Remote site settings updated.', 'fleet-for-openstation' );
+				break;
+			case 'content':
+				$type       = sanitize_key( isset( $values['content_type'] ) ? $values['content_type'] : '' );
+				$content_id = absint( isset( $values['content_id'] ) ? $values['content_id'] : 0 );
+				$post_status = sanitize_key( isset( $values['status'] ) ? $values['status'] : '' );
+				if ( ! in_array( $type, array( 'posts', 'pages' ), true ) || $content_id < 1 || ! in_array( $post_status, array( 'publish', 'draft', 'pending', 'future', 'private', 'trash' ), true ) ) {
+					return new WP_Error( 'openstation_fleet_invalid_content', __( 'Choose valid content and a valid status.', 'fleet-for-openstation' ) );
+				}
+				$result  = self::remote_request( $site, 'POST', 'wp/v2/' . $type . '/' . $content_id, array( 'title' => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ), 'status' => $post_status ) );
+				// translators: 1: content type, 2: content id.
+				$message = sprintf( __( '%1$s #%2$d updated.', 'fleet-for-openstation' ), ucfirst( $type ), $content_id );
+				break;
+			case 'comment':
+				$comment_id = absint( isset( $values['comment_id'] ) ? $values['comment_id'] : 0 );
+				$comment_status = sanitize_key( isset( $values['status'] ) ? $values['status'] : '' );
+				if ( $comment_id < 1 || ! in_array( $comment_status, array( 'approved', 'hold', 'spam', 'trash' ), true ) ) {
+					return new WP_Error( 'openstation_fleet_invalid_comment', __( 'Choose a valid comment status.', 'fleet-for-openstation' ) );
+				}
+				$result  = self::remote_request( $site, 'POST', 'wp/v2/comments/' . $comment_id, array( 'status' => $comment_status ) );
+				// translators: %s: comment status.
+				$message = sprintf( __( 'Comment moved to %s.', 'fleet-for-openstation' ), $comment_status );
+				break;
+			case 'media':
+				$media_id = absint( isset( $values['media_id'] ) ? $values['media_id'] : 0 );
+				if ( $media_id < 1 ) {
+					return new WP_Error( 'openstation_fleet_invalid_media', __( 'Choose a valid media item.', 'fleet-for-openstation' ) );
+				}
+				$result  = self::remote_request( $site, 'POST', 'wp/v2/media/' . $media_id, array( 'title' => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ), 'alt_text' => sanitize_text_field( isset( $values['alt_text'] ) ? $values['alt_text'] : '' ), 'caption' => sanitize_textarea_field( isset( $values['caption'] ) ? $values['caption'] : '' ) ) );
+				$message = __( 'Media details updated.', 'fleet-for-openstation' );
+				break;
+			case 'plugin':
+				$plugin        = isset( $values['plugin'] ) ? (string) $values['plugin'] : '';
+				$plugin_status = sanitize_key( isset( $values['status'] ) ? $values['status'] : '' );
+				if ( ! preg_match( '#^[a-z0-9._-]+(?:/[a-z0-9._-]+)?$#i', $plugin ) || ! in_array( $plugin_status, array( 'active', 'inactive' ), true ) ) {
+					return new WP_Error( 'openstation_fleet_invalid_plugin', __( 'Choose a valid plugin action.', 'fleet-for-openstation' ) );
+				}
+				$route   = implode( '/', array_map( 'rawurlencode', explode( '/', $plugin ) ) );
+				$result  = self::remote_request( $site, 'POST', 'wp/v2/plugins/' . $route, array( 'status' => $plugin_status ) );
+				// translators: 1: plugin id, 2: plugin status.
+				$message = sprintf( __( '%1$s set to %2$s.', 'fleet-for-openstation' ), $plugin, $plugin_status );
+				break;
+			case 'install-plugin':
+				$slug          = sanitize_key( isset( $values['plugin_slug'] ) ? $values['plugin_slug'] : '' );
+				$plugin_status = sanitize_key( isset( $values['status'] ) ? $values['status'] : 'active' );
+				if ( ! preg_match( '/^[a-z0-9][a-z0-9._-]*$/', $slug ) || ! in_array( $plugin_status, array( 'active', 'inactive' ), true ) ) {
+					return new WP_Error( 'openstation_fleet_invalid_plugin', __( 'Enter a valid WordPress.org plugin slug.', 'fleet-for-openstation' ) );
+				}
+				$result  = self::remote_request( $site, 'POST', 'wp/v2/plugins', array( 'slug' => $slug, 'status' => $plugin_status ) );
+				// translators: %s: WordPress.org plugin slug.
+				$message = sprintf( __( 'Plugin %s installed.', 'fleet-for-openstation' ), $slug );
+				break;
+			case 'create-user':
+				$username = sanitize_user( isset( $values['username'] ) ? $values['username'] : '', true );
+				$email    = sanitize_email( isset( $values['email'] ) ? $values['email'] : '' );
+				$password = isset( $values['password'] ) ? (string) $values['password'] : '';
+				$role     = sanitize_key( isset( $values['role'] ) ? $values['role'] : '' );
+				if ( '' === $username || ! is_email( $email ) || strlen( $password ) < 12 || ! in_array( $role, self::editable_roles(), true ) ) {
+					return new WP_Error( 'openstation_fleet_invalid_user', __( 'Enter a username, valid email, role, and password of at least 12 characters.', 'fleet-for-openstation' ) );
+				}
+				$result   = self::remote_request( $site, 'POST', 'wp/v2/users', array( 'username' => $username, 'email' => $email, 'password' => $password, 'roles' => array( $role ) ) );
+				$password = null;
+				// translators: %s: new WordPress username.
+				$message  = sprintf( __( 'User %s created.', 'fleet-for-openstation' ), $username );
+				break;
+			case 'user':
+				$user_id = absint( isset( $values['user_id'] ) ? $values['user_id'] : 0 );
+				$name    = sanitize_text_field( isset( $values['name'] ) ? $values['name'] : '' );
+				$email   = sanitize_email( isset( $values['email'] ) ? $values['email'] : '' );
+				$role    = sanitize_key( isset( $values['role'] ) ? $values['role'] : '' );
+				if ( $user_id < 1 || '' === $name || ! is_email( $email ) || ! in_array( $role, self::editable_roles(), true ) ) {
+					return new WP_Error( 'openstation_fleet_invalid_user', __( 'Enter a display name, valid email, and role.', 'fleet-for-openstation' ) );
+				}
+				$result  = self::remote_request( $site, 'POST', 'wp/v2/users/' . $user_id, array( 'name' => $name, 'email' => $email, 'roles' => array( $role ) ) );
+				// translators: %d: WordPress user id.
+				$message = sprintf( __( 'User #%d updated.', 'fleet-for-openstation' ), $user_id );
+				break;
+			case 'agency':
+				$plan = sanitize_key( isset( $values['plan_status'] ) ? $values['plan_status'] : 'none' );
+				$tags = preg_split( '/[,\r\n]+/', isset( $values['tags'] ) ? (string) $values['tags'] : '' );
+				$site['agency'] = array(
+					'client_name' => sanitize_text_field( isset( $values['client_name'] ) ? $values['client_name'] : '' ),
+					'tags'        => array_values( array_unique( array_filter( array_map( 'sanitize_text_field', is_array( $tags ) ? $tags : array() ) ) ) ),
+					'plan_status' => in_array( $plan, array( 'none', 'active', 'paused', 'ended' ), true ) ? $plan : 'none',
+					'notes'       => sanitize_textarea_field( isset( $values['notes'] ) ? $values['notes'] : '' ),
+					'favorite'    => ! empty( $values['favorite'] ),
+				);
+				$local_fields[] = 'agency';
+				$message = __( 'Agency profile updated.', 'fleet-for-openstation' );
+				break;
+			case 'api':
+				$method = strtoupper( sanitize_key( isset( $values['api_method'] ) ? $values['api_method'] : 'GET' ) );
+				$route  = trim( isset( $values['api_route'] ) ? (string) $values['api_route'] : '' );
+				$raw    = trim( isset( $values['api_body'] ) ? (string) $values['api_body'] : '' );
+				if ( ! in_array( $method, array( 'GET', 'POST', 'PUT', 'PATCH', 'DELETE' ), true ) || ! self::is_safe_api_route( $route ) ) {
+					return new WP_Error( 'openstation_fleet_invalid_api', __( 'Choose a valid method and REST route.', 'fleet-for-openstation' ) );
+				}
+				$body = null;
+				if ( '' !== $raw ) {
+					$body = json_decode( $raw, true );
+					if ( JSON_ERROR_NONE !== json_last_error() || ! is_array( $body ) ) {
+						return new WP_Error( 'openstation_fleet_invalid_json', __( 'The request body must be a JSON object or array.', 'fleet-for-openstation' ) );
+					}
+				}
+				$result = self::remote_request( $site, $method, ltrim( $route, '/' ), $body );
+				// translators: 1: HTTP method, 2: REST route.
+				$message = sprintf( __( '%1$s /%2$s completed.', 'fleet-for-openstation' ), $method, ltrim( $route, '/' ) );
+				break;
+			case 'disconnect':
+				$uuid = isset( $site['credential_uuid'] ) ? rawurlencode( $site['credential_uuid'] ) : '';
+				if ( '' === $uuid ) {
+					return new WP_Error( 'openstation_fleet_disconnect_failed', __( 'Fleet could not identify the remote authorization.', 'fleet-for-openstation' ) );
+				}
+				$revoked = self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . $uuid );
+				if ( is_wp_error( $revoked ) ) {
+					return $revoked;
+				}
+				self::remove_site( $id );
+				self::record_activity( $id, $site, 'disconnected', __( 'Remote authorization revoked and site disconnected.', 'fleet-for-openstation' ) );
+				return array( 'ok' => true, 'disconnected' => true );
+			default:
+				return new WP_Error( 'openstation_fleet_unknown_action', __( 'Fleet did not recognize that action.', 'fleet-for-openstation' ) );
+		}
+
+		if ( is_wp_error( $result ) ) {
+			$status  = 'error';
+			$message = $result->get_error_message();
+		}
+		if ( ! self::save_site( $id, $site, $local_fields ) ) {
+			return new WP_Error( 'openstation_fleet_storage_failed', __( 'The remote action completed, but Fleet could not save its local state. Refresh this window before continuing.', 'fleet-for-openstation' ) );
+		}
+		self::record_activity( $id, $site, $action, $message, $status );
+		return is_wp_error( $result ) ? $result : array( 'ok' => true, 'message' => $message, 'data' => $result );
 	}
 
 	/**
@@ -1472,7 +969,7 @@ final class OpenStation_Fleet {
 	 */
 	public static function normalize_site_url( $url ) {
 		$url   = trim( (string) $url );
-		$parts = parse_url( $url );
+		$parts = wp_parse_url( $url );
 		if (
 			false === $parts ||
 			empty( $parts['scheme'] ) ||
@@ -1537,9 +1034,10 @@ final class OpenStation_Fleet {
 			$response = wp_safe_remote_get(
 				$rest_url,
 				array(
-					'timeout'     => 15,
-					'redirection' => 3,
-					'headers'     => array( 'Accept' => 'application/json' ),
+					'timeout'             => 15,
+					'redirection'         => 3,
+					'limit_response_size' => self::DISCOVERY_LIMIT,
+					'headers'             => array( 'Accept' => 'application/json' ),
 				)
 			);
 			if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
@@ -1560,10 +1058,13 @@ final class OpenStation_Fleet {
 				? $data['authentication']['application-passwords']['endpoints']['authorization']
 				: '';
 			if ( self::is_same_origin_https_url( $authorization_url, $reported_url ) ) {
+				$canonical_rest_url = false !== strpos( $rest_url, 'rest_route=' )
+					? add_query_arg( 'rest_route', '/', trailingslashit( $reported_url ) )
+					: trailingslashit( $reported_url ) . 'wp-json/';
 				return array(
 					'name'              => $name,
 					'site_url'          => $reported_url,
-					'rest_url'          => $rest_url,
+					'rest_url'          => $canonical_rest_url,
 					'authorization_url' => esc_url_raw( $authorization_url ),
 				);
 			}
@@ -1588,8 +1089,11 @@ final class OpenStation_Fleet {
 			return $site;
 		}
 
-		$site['capabilities']      = self::discover_capabilities( $root );
-		$site['wordpress_version'] = self::wordpress_version_from_root( $root );
+		$site['capabilities'] = self::discover_capabilities( $root );
+		$site['environment']  = self::fetch_core_environment( $site );
+		$site['wordpress_version'] = ! empty( $site['environment']['wp_version'] )
+			? $site['environment']['wp_version']
+			: self::wordpress_version_from_root( $root );
 		$plugins                   = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' );
 		if ( is_wp_error( $plugins ) ) {
 			$site['error'] = $plugins->get_error_message();
@@ -1598,6 +1102,7 @@ final class OpenStation_Fleet {
 
 		$site['openstation'] = self::inspect_plugins( $plugins );
 		$site['inbox']       = self::fetch_inbox_summary( $site );
+		$site['search_index'] = self::fetch_search_index( $site );
 		if ( $refresh_health || $site['health_checked'] < time() - ( 6 * HOUR_IN_SECONDS ) ) {
 			$site['health']         = self::fetch_site_health( $site );
 			$site['health_checked'] = time();
@@ -1607,36 +1112,84 @@ final class OpenStation_Fleet {
 	}
 
 	/**
-	 * Refresh connected sites for every Fleet user through WordPress Cron.
+	 * Refresh a small, resumable slice of the fleet through WordPress Cron.
+	 *
+	 * Keeping each run bounded prevents a large fleet from turning a front-end
+	 * request that happens to spawn WP-Cron into a long remote-request chain.
 	 */
 	public static function run_scheduled_checks() {
-		$user_ids      = get_users(
-			array(
-				'fields'   => 'ids',
-				'meta_key' => self::USER_META_SITES,
-			)
-		);
+		$token = wp_generate_uuid4();
+		$lock  = get_option( self::CRON_LOCK, array() );
+		if ( is_array( $lock ) && ! empty( $lock['expires'] ) && (int) $lock['expires'] <= time() ) {
+			delete_option( self::CRON_LOCK );
+		}
+		if ( ! add_option( self::CRON_LOCK, array( 'token' => $token, 'expires' => time() + ( 4 * MINUTE_IN_SECONDS ) ), '', 'no' ) ) {
+			return;
+		}
+
 		$original_user = get_current_user_id();
-		foreach ( $user_ids as $user_id ) {
-			wp_set_current_user( (int) $user_id );
-			$sites = self::get_sites();
-			foreach ( $sites as $id => $site ) {
-				$before       = count( self::attention_reasons( $site ) );
-				$sites[ $id ] = self::refresh_site( $site, false );
-				$after        = count( self::attention_reasons( $sites[ $id ] ) );
+		try {
+			$jobs     = array();
+			$user_ids = get_users(
+				array(
+					'fields'   => 'ids',
+					// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Select only users who have Fleet data.
+					'meta_key' => self::USER_META_SITES,
+				)
+			);
+			foreach ( $user_ids as $user_id ) {
+				$user_id = (int) $user_id;
+				if ( ! user_can( $user_id, self::CAPABILITY ) ) {
+					continue;
+				}
+				wp_set_current_user( $user_id );
+				foreach ( array_keys( self::get_sites() ) as $site_id ) {
+					$jobs[] = array( 'user_id' => $user_id, 'site_id' => sanitize_key( $site_id ) );
+				}
+			}
+
+			$cursor = sanitize_text_field( (string) get_option( self::CRON_CURSOR, '' ) );
+			$start  = 0;
+			foreach ( $jobs as $index => $job ) {
+				if ( $cursor === $job['user_id'] . ':' . $job['site_id'] ) {
+					$start = $index + 1;
+					break;
+				}
+			}
+			$slice = array_slice( $jobs, $start, self::CRON_BATCH_SIZE );
+			foreach ( $slice as $job ) {
+				wp_set_current_user( $job['user_id'] );
+				$sites = self::get_sites();
+				if ( ! isset( $sites[ $job['site_id'] ] ) ) {
+					update_option( self::CRON_CURSOR, $job['user_id'] . ':' . $job['site_id'], false );
+					continue;
+				}
+				$site   = $sites[ $job['site_id'] ];
+				$before = count( self::attention_reasons( $site ) );
+				$site   = self::refresh_site( $site, false );
+				$after  = count( self::attention_reasons( $site ) );
+				self::save_site( $job['site_id'], $site );
 				if ( $before !== $after ) {
 					self::record_activity(
-						(string) $id,
-						$sites[ $id ],
+						$job['site_id'],
+						$site,
 						'health',
 						$after > $before ? __( 'New attention item detected.', 'fleet-for-openstation' ) : __( 'A Fleet attention item was resolved.', 'fleet-for-openstation' ),
 						$after > $before ? 'warning' : 'success'
 					);
 				}
+				update_option( self::CRON_CURSOR, $job['user_id'] . ':' . $job['site_id'], false );
 			}
-			self::save_sites( $sites );
+			if ( empty( $slice ) || $start + count( $slice ) >= count( $jobs ) ) {
+				delete_option( self::CRON_CURSOR );
+			}
+		} finally {
+			wp_set_current_user( $original_user );
+			$owned_lock = get_option( self::CRON_LOCK, array() );
+			if ( is_array( $owned_lock ) && isset( $owned_lock['token'] ) && hash_equals( (string) $owned_lock['token'], $token ) ) {
+				delete_option( self::CRON_LOCK );
+			}
 		}
-		wp_set_current_user( $original_user );
 	}
 
 	/**
@@ -1646,12 +1199,14 @@ final class OpenStation_Fleet {
 	 * @return array
 	 */
 	private static function discover_capabilities( $root ) {
-		$routes = isset( $root['routes'] ) && is_array( $root['routes'] ) ? array_keys( $root['routes'] ) : array();
-		$has    = static function ( $route ) use ( $routes ) {
+		$routes     = isset( $root['routes'] ) && is_array( $root['routes'] ) ? array_keys( $root['routes'] ) : array();
+		$namespaces = isset( $root['namespaces'] ) && is_array( $root['namespaces'] ) ? array_values( array_map( 'sanitize_text_field', $root['namespaces'] ) ) : array();
+		$has        = static function ( $route ) use ( $routes ) {
 			return in_array( $route, $routes, true );
 		};
 		return array(
 			'batch'       => $has( '/batch/v1' ),
+			'abilities'   => in_array( 'wp-abilities/v1', $namespaces, true ),
 			'search'      => $has( '/wp/v2/search' ),
 			'posts'       => $has( '/wp/v2/posts' ),
 			'pages'       => $has( '/wp/v2/pages' ),
@@ -1674,8 +1229,37 @@ final class OpenStation_Fleet {
 			'statuses'    => $has( '/wp/v2/statuses' ),
 			'site_health' => $has( '/wp-site-health/v1/tests/background-updates' ),
 			'route_count' => count( $routes ),
-			'namespaces'  => isset( $root['namespaces'] ) && is_array( $root['namespaces'] ) ? array_values( array_map( 'sanitize_text_field', $root['namespaces'] ) ) : array(),
+			'namespaces'  => $namespaces,
 		);
+	}
+
+	/**
+	 * Read the authenticated environment facts exposed by Core's Abilities API.
+	 *
+	 * WordPress 6.9 introduced the API and WordPress 7.1 made its REST-facing
+	 * schemas and public exposure contract friendlier to external clients. This
+	 * call adds richer environment facts to the REST-index capability baseline.
+	 *
+	 * @param array $site Connected site record with discovered capabilities.
+	 * @return array
+	 */
+	private static function fetch_core_environment( $site ) {
+		if ( empty( $site['capabilities']['abilities'] ) ) {
+			return array();
+		}
+
+		$environment = self::remote_request( $site, 'GET', 'wp-abilities/v1/abilities/core/get-environment-info/run' );
+		if ( is_wp_error( $environment ) || ! is_array( $environment ) ) {
+			return array();
+		}
+
+		$clean = array();
+		foreach ( array( 'environment', 'php_version', 'db_server_info', 'wp_version' ) as $key ) {
+			if ( isset( $environment[ $key ] ) && is_scalar( $environment[ $key ] ) ) {
+				$clean[ $key ] = sanitize_text_field( (string) $environment[ $key ] );
+			}
+		}
+		return $clean;
 	}
 
 	/**
@@ -1759,9 +1343,9 @@ final class OpenStation_Fleet {
 			'dotorg-communication' => 'wp-site-health/v1/tests/dotorg-communication',
 			'authorization-header' => 'wp-site-health/v1/tests/authorization-header',
 		);
-		$results = array();
-		foreach ( $tests as $key => $route ) {
-			$result = self::remote_request( $site, 'GET', $route );
+		$responses = self::remote_get_map( $site, $tests );
+		$results   = array();
+		foreach ( $responses as $key => $result ) {
 			if ( is_wp_error( $result ) || empty( $result['status'] ) ) {
 				continue;
 			}
@@ -1889,6 +1473,45 @@ final class OpenStation_Fleet {
 	}
 
 	/**
+	 * Fetch named Core REST resources, using the batch controller when the
+	 * managed site advertises it. Each result remains independently usable so
+	 * one unavailable collection does not hide successful siblings.
+	 *
+	 * @param array $site  Site record.
+	 * @param array $paths Map of result keys to REST paths.
+	 * @return array Map of result keys to response bodies or WP_Error objects.
+	 */
+	private static function remote_get_map( $site, $paths ) {
+		if ( empty( $paths ) ) {
+			return array();
+		}
+
+		$requests = array();
+		foreach ( $paths as $path ) {
+			$requests[] = array(
+				'method' => 'GET',
+				'path'   => '/' . ltrim( (string) $path, '/' ),
+			);
+		}
+
+		$responses = self::remote_batch( $site, $requests );
+		if ( is_wp_error( $responses ) ) {
+			return array_fill_keys( array_keys( $paths ), $responses );
+		}
+
+		$results = array();
+		foreach ( array_keys( $paths ) as $index => $key ) {
+			$response = isset( $responses[ $index ] ) && is_array( $responses[ $index ] ) ? $responses[ $index ] : array();
+			if ( ! empty( $response['error'] ) ) {
+				$results[ $key ] = new WP_Error( 'openstation_fleet_remote_error', sanitize_text_field( $response['error'] ) );
+				continue;
+			}
+			$results[ $key ] = isset( $response['body'] ) && is_array( $response['body'] ) ? $response['body'] : array();
+		}
+		return $results;
+	}
+
+	/**
 	 * Send existing REST requests through Core's batch route where available.
 	 *
 	 * @param array $site     Site record.
@@ -1904,10 +1527,20 @@ final class OpenStation_Fleet {
 			if ( ! is_wp_error( $result ) && isset( $result['responses'] ) && is_array( $result['responses'] ) && count( $result['responses'] ) === count( $requests ) ) {
 				$envelopes = array();
 				foreach ( $result['responses'] as $response ) {
+					if ( ! is_array( $response ) ) {
+						$envelopes[] = array(
+							'status'  => 0,
+							'headers' => array(),
+							'body'    => array(),
+							'error'   => __( 'WordPress returned an incomplete batch response.', 'fleet-for-openstation' ),
+						);
+						continue;
+					}
 					$status = isset( $response['status'] ) ? (int) $response['status'] : 0;
 					$body   = isset( $response['body'] ) ? $response['body'] : array();
 					$error  = '';
 					if ( $status < 200 || $status >= 300 ) {
+						// translators: %d: remote HTTP status code.
 						$error = is_array( $body ) && ! empty( $body['message'] ) ? sanitize_text_field( wp_strip_all_tags( $body['message'] ) ) : sprintf( __( 'WordPress returned HTTP %d.', 'fleet-for-openstation' ), $status );
 					}
 					$envelopes[] = array(
@@ -2011,6 +1644,7 @@ final class OpenStation_Fleet {
 		}
 		$remote_version = isset( $site['wordpress_version'] ) ? $site['wordpress_version'] : '';
 		if ( $remote_version && version_compare( $remote_version, get_bloginfo( 'version' ), '<' ) ) {
+			// translators: %s: remote WordPress version.
 			$reasons[] = array( 'wordpress', sprintf( __( 'WordPress %s is older than the hub', 'fleet-for-openstation' ), $remote_version ), 'recommended' );
 		}
 		return $reasons;
@@ -2033,10 +1667,11 @@ final class OpenStation_Fleet {
 		$authorization = 'Basic ' . base64_encode( (string) $site['user_login'] . ':' . $credential );
 
 		$args = array(
-			'method'      => $method,
-			'timeout'     => 20,
-			'redirection' => 3,
-			'headers'     => array(
+			'method'              => $method,
+			'timeout'             => self::REQUEST_TIMEOUT,
+			'redirection'         => 0,
+			'limit_response_size' => self::RESPONSE_LIMIT,
+			'headers'             => array(
 				'Accept'        => 'application/json',
 				'Authorization' => $authorization,
 			),
@@ -2047,72 +1682,81 @@ final class OpenStation_Fleet {
 			$args['data_format']             = 'body';
 		}
 
-		$response = wp_safe_remote_request( self::api_url( $site, $path ), $args );
-		$credential = null;
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-
-		$code = wp_remote_retrieve_response_code( $response );
-		$data = json_decode( wp_remote_retrieve_body( $response ), true );
-		if ( $code < 200 || $code >= 300 ) {
-			$message = is_array( $data ) && ! empty( $data['message'] )
-				? wp_strip_all_tags( $data['message'] )
-				: sprintf(
-					/* translators: %d: HTTP status code. */
-					__( 'The remote site returned HTTP %d.', 'fleet-for-openstation' ),
-					$code
-				);
-			return new WP_Error( 'openstation_fleet_remote_error', $message, array( 'status' => $code ) );
-		}
-
-		return is_array( $data ) ? $data : array();
+		$response      = self::safe_authenticated_request( self::api_url( $site, $path ), $args, $site['site_url'] );
+		$credential    = null;
+		$authorization = null;
+		unset( $args['headers']['Authorization'] );
+		// translators: %d: remote HTTP status code.
+		return self::decode_remote_response( $response, 'openstation_fleet_remote_error', __( 'The remote site returned HTTP %d.', 'fleet-for-openstation' ) );
 	}
 
 	/**
-	 * Upload one validated local request file to a managed Media Library.
+	 * Follow at most one authenticated redirect, and only when it remains on
+	 * the managed site's HTTPS origin. Mutating requests require a redirect
+	 * status that explicitly preserves the HTTP method.
 	 *
-	 * @param array  $site     Connected site record.
-	 * @param string $tmp_name PHP upload temporary path.
-	 * @param string $filename Sanitized filename.
-	 * @param string $mime     Validated MIME type.
+	 * @param string $url      REST endpoint URL.
+	 * @param array  $args     WordPress HTTP API arguments.
+	 * @param string $site_url Managed site URL.
 	 * @return array|WP_Error
 	 */
-	private static function remote_upload( &$site, $tmp_name, $filename, $mime ) {
-		$contents = file_get_contents( $tmp_name ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- local validated upload, not a URL.
-		if ( false === $contents ) {
-			return new WP_Error( 'openstation_fleet_upload_read_failed', __( 'Fleet could not read the uploaded file.', 'fleet-for-openstation' ) );
-		}
-		$credential = self::open_secret( isset( $site['secret'] ) ? (string) $site['secret'] : '' );
-		if ( is_wp_error( $credential ) ) {
-			return $credential;
-		}
-		$authorization = 'Basic ' . base64_encode( (string) $site['user_login'] . ':' . $credential );
-		$args = array(
-			'method'      => 'POST',
-			'timeout'     => 60,
-			'redirection' => 3,
-			'headers'     => array(
-				'Accept'              => 'application/json',
-				'Authorization'       => $authorization,
-				'Content-Type'        => $mime,
-				'Content-Disposition' => "attachment; filename*=UTF-8''" . rawurlencode( $filename ),
-			),
-			'body'        => $contents,
-			'data_format' => 'body',
-		);
-		$credential = null;
-		$contents   = null;
-		$response   = wp_safe_remote_request( self::api_url( $site, 'wp/v2/media' ), $args );
+	private static function safe_authenticated_request( $url, $args, $site_url ) {
+		$response = wp_safe_remote_request( $url, $args );
 		if ( is_wp_error( $response ) ) {
 			return $response;
 		}
+
 		$code = wp_remote_retrieve_response_code( $response );
-		$data = json_decode( wp_remote_retrieve_body( $response ), true );
-		if ( $code < 200 || $code >= 300 ) {
-			return new WP_Error( 'openstation_fleet_media_upload_failed', is_array( $data ) && ! empty( $data['message'] ) ? wp_strip_all_tags( $data['message'] ) : __( 'The managed site rejected the media upload.', 'fleet-for-openstation' ) );
+		if ( ! in_array( $code, array( 301, 302, 307, 308 ), true ) ) {
+			return $response;
 		}
-		return is_array( $data ) ? $data : array();
+		$method = isset( $args['method'] ) ? strtoupper( (string) $args['method'] ) : 'GET';
+		if ( ! in_array( $method, array( 'GET', 'HEAD' ), true ) && ! in_array( $code, array( 307, 308 ), true ) ) {
+			return $response;
+		}
+
+		$location = (string) wp_remote_retrieve_header( $response, 'location' );
+		if ( 0 === strpos( $location, '//' ) ) {
+			return $response;
+		}
+		if ( 0 === strpos( $location, '/' ) ) {
+			$location = self::url_origin( $site_url ) . $location;
+		}
+		if ( ! self::is_same_origin_https_url( $location, $site_url ) ) {
+			return $response;
+		}
+		return wp_safe_remote_request( $location, $args );
+	}
+
+	/**
+	 * Validate an HTTP response as a WordPress REST JSON object or collection.
+	 * Empty successful responses are normalized to an empty array.
+	 *
+	 * @param array|WP_Error $response      WordPress HTTP response.
+	 * @param string         $error_code    Error code for non-success status.
+	 * @param string         $http_message  HTTP error message with one %d placeholder.
+	 * @return array|WP_Error
+	 */
+	private static function decode_remote_response( $response, $error_code, $http_message ) {
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code     = wp_remote_retrieve_response_code( $response );
+		$raw      = wp_remote_retrieve_body( $response );
+		$has_body = '' !== trim( (string) $raw );
+		$data     = $has_body ? json_decode( $raw, true ) : array();
+		if ( $code < 200 || $code >= 300 ) {
+			$message = is_array( $data ) && ! empty( $data['message'] )
+				? wp_strip_all_tags( $data['message'] )
+				: sprintf( $http_message, $code );
+			return new WP_Error( $error_code, $message, array( 'status' => $code ) );
+		}
+		if ( ( $has_body && JSON_ERROR_NONE !== json_last_error() ) || ! is_array( $data ) ) {
+			return new WP_Error( 'openstation_fleet_invalid_response', __( 'The remote site returned an invalid JSON response.', 'fleet-for-openstation' ) );
+		}
+
+		return $data;
 	}
 
 	/**
@@ -2218,996 +1862,6 @@ final class OpenStation_Fleet {
 	private static function secret_key() {
 		return hash_hmac( 'sha256', 'fleet-for-openstation', wp_salt( 'auth' ), true );
 	}
-
-	/**
-	 * Render the short installation handoff after WordPress approval.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Connected site record.
-	 */
-	private static function render_site_setup( $id, $site ) {
-		?>
-		<div
-			class="wrap fleet-app fleet-setup"
-			data-ajax-url="<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>"
-			data-site-id="<?php echo esc_attr( $id ); ?>"
-			data-window-id="<?php echo esc_attr( self::site_window_id( $id ) ); ?>"
-			data-window-title="<?php echo esc_attr( $site['name'] ); ?>"
-			data-hub-url="<?php echo esc_url( self::hub_url() ); ?>"
-			data-nonce="<?php echo esc_attr( wp_create_nonce( 'openstation_fleet_finish_setup_' . $id ) ); ?>"
-			data-messages="<?php echo esc_attr( wp_json_encode( array( __( 'Verifying the secure WordPress connection…', 'fleet-for-openstation' ), __( 'Installing OpenStation through WordPress…', 'fleet-for-openstation' ), __( 'Checking the site’s management capabilities…', 'fleet-for-openstation' ), __( 'Preparing the remote workspace…', 'fleet-for-openstation' ) ) ) ); ?>"
-			data-complete-message="<?php esc_attr_e( 'OpenStation is ready. Opening the site workspace…', 'fleet-for-openstation' ); ?>"
-			data-error-message="<?php esc_attr_e( 'WordPress could not finish the setup request.', 'fleet-for-openstation' ); ?>"
-		>
-			<div class="fleet-setup__card">
-				<div class="fleet-setup__orbit" aria-hidden="true">
-					<span class="fleet-setup__hub"><span class="dashicons dashicons-networking"></span></span>
-					<span class="fleet-setup__site"><span class="dashicons dashicons-admin-site-alt3"></span></span>
-				</div>
-				<span class="fleet-eyebrow"><?php esc_html_e( 'Connection approved', 'fleet-for-openstation' ); ?></span>
-				<h1><?php printf( esc_html__( 'Bringing %s into Fleet', 'fleet-for-openstation' ), esc_html( $site['name'] ) ); ?></h1>
-				<p class="fleet-setup__message" data-fleet-setup-message><?php esc_html_e( 'Verifying the secure WordPress connection…', 'fleet-for-openstation' ); ?></p>
-				<ol class="fleet-setup__steps" aria-label="<?php esc_attr_e( 'Setup progress', 'fleet-for-openstation' ); ?>">
-					<li class="is-active" data-fleet-setup-step="0"><span class="dashicons dashicons-yes-alt"></span><?php esc_html_e( 'Connection approved', 'fleet-for-openstation' ); ?></li>
-					<li data-fleet-setup-step="1"><span class="dashicons dashicons-download"></span><?php esc_html_e( 'Install OpenStation', 'fleet-for-openstation' ); ?></li>
-					<li data-fleet-setup-step="2"><span class="dashicons dashicons-admin-generic"></span><?php esc_html_e( 'Check site capabilities', 'fleet-for-openstation' ); ?></li>
-					<li data-fleet-setup-step="3"><span class="dashicons dashicons-yes"></span><?php esc_html_e( 'Open workspace', 'fleet-for-openstation' ); ?></li>
-				</ol>
-				<p class="fleet-setup__note"><?php esc_html_e( 'Keep this window open. The first WordPress.org download can take a moment.', 'fleet-for-openstation' ); ?></p>
-				<div class="fleet-setup__error" data-fleet-setup-error hidden>
-					<span class="dashicons dashicons-warning" aria-hidden="true"></span>
-					<div><strong><?php esc_html_e( 'Setup needs another try', 'fleet-for-openstation' ); ?></strong><p data-fleet-setup-error-message></p></div>
-					<a class="button button-primary" href="<?php echo esc_url( self::hub_url() ); ?>"><?php esc_html_e( 'Return to Fleet', 'fleet-for-openstation' ); ?></a>
-				</div>
-				<noscript><p><a class="button button-primary" href="<?php echo esc_url( self::hub_url() ); ?>"><?php esc_html_e( 'Return to Fleet to finish setup', 'fleet-for-openstation' ); ?></a></p></noscript>
-			</div>
-		</div>
-		<?php
-	}
-
-	/**
-	 * Render one connected site card.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_site_card( $id, $site ) {
-		$status     = isset( $site['openstation']['status'] ) ? $site['openstation']['status'] : 'unknown';
-		$version    = isset( $site['openstation']['version'] ) ? $site['openstation']['version'] : '';
-		$attention  = self::attention_reasons( $site );
-		$agency     = $site['agency'];
-		$auth_label = __( 'Application Password', 'fleet-for-openstation' );
-		$labels  = array(
-			'active'   => $version ? sprintf( __( 'OpenStation %s', 'fleet-for-openstation' ), $version ) : __( 'OpenStation active', 'fleet-for-openstation' ),
-			'inactive' => __( 'Installed, inactive', 'fleet-for-openstation' ),
-			'missing'  => __( 'OpenStation not installed', 'fleet-for-openstation' ),
-			'unknown'  => __( 'Not checked', 'fleet-for-openstation' ),
-		);
-		$manage_url = add_query_arg(
-			array(
-				'page'    => self::MENU_SLUG,
-				'site_id' => $id,
-			),
-			admin_url( 'admin.php' )
-		);
-		$window_id = self::site_window_id( $id );
-		?>
-		<article class="fleet-site-card">
-			<div class="fleet-site-card__identity">
-				<label class="fleet-site-select"><span class="screen-reader-text"><?php printf( esc_html__( 'Select %s', 'fleet-for-openstation' ), esc_html( $site['name'] ) ); ?></span><input form="fleet-bulk-form" name="site_ids[]" type="checkbox" value="<?php echo esc_attr( $id ); ?>"></label>
-				<span class="fleet-site-icon"><span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span><span class="fleet-site-icon__status fleet-site-icon__status--<?php echo esc_attr( $status ); ?>"></span></span>
-				<div>
-					<h3><?php echo ! empty( $agency['favorite'] ) ? '<span class="dashicons dashicons-star-filled" aria-hidden="true"></span>' : ''; ?><?php echo esc_html( $site['name'] ); ?></h3>
-					<a href="<?php echo esc_url( $site['site_url'] ); ?>" target="_blank" rel="noreferrer"><?php echo esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ); ?><span class="dashicons dashicons-external" aria-hidden="true"></span></a>
-					<?php if ( $agency['client_name'] || $agency['tags'] ) : ?><small class="fleet-site-card__agency"><?php echo esc_html( implode( ' · ', array_filter( array( $agency['client_name'], implode( ', ', array_slice( $agency['tags'], 0, 2 ) ) ) ) ) ); ?></small><?php endif; ?>
-				</div>
-			</div>
-			<div class="fleet-site-card__state">
-				<span class="fleet-pill fleet-pill--<?php echo esc_attr( $status ); ?>"><span class="fleet-status-dot" aria-hidden="true"></span><?php echo esc_html( isset( $labels[ $status ] ) ? $labels[ $status ] : $labels['unknown'] ); ?></span>
-				<?php if ( ! empty( $attention ) ) : ?><span class="fleet-attention-count"><span class="dashicons dashicons-warning" aria-hidden="true"></span><?php printf( esc_html( _n( '%d attention item', '%d attention items', count( $attention ), 'fleet-for-openstation' ) ), esc_html( count( $attention ) ) ); ?></span><?php endif; ?>
-				<small class="fleet-site-card__checked">
-					<?php
-					if ( $site['last_checked'] ) {
-						printf(
-							/* translators: 1: human-readable time difference, 2: authentication type. */
-							esc_html__( '%1$s ago · %2$s', 'fleet-for-openstation' ),
-							esc_html( human_time_diff( $site['last_checked'], time() ) ),
-							esc_html( $auth_label )
-						);
-					} else {
-						printf(
-							/* translators: %s: authentication type. */
-							esc_html__( 'Not checked · %s', 'fleet-for-openstation' ),
-							esc_html( $auth_label )
-						);
-					}
-					?>
-				</small>
-			</div>
-			<?php if ( ! empty( $site['error'] ) ) : ?>
-				<p class="fleet-site-error"><span class="dashicons dashicons-warning" aria-hidden="true"></span><?php echo esc_html( $site['error'] ); ?></p>
-			<?php endif; ?>
-			<div class="fleet-site-card__actions">
-				<?php if ( 'active' === $status ) : ?>
-					<a class="button button-primary fleet-manage-button" href="<?php echo esc_url( $manage_url ); ?>" target="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-id="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>">
-						<?php esc_html_e( 'Manage', 'fleet-for-openstation' ); ?>
-						<span class="dashicons dashicons-arrow-right-alt2" aria-hidden="true"></span>
-					</a>
-				<?php else : ?>
-					<?php self::render_action_form( 'install', $id, __( 'Finish OpenStation setup', 'fleet-for-openstation' ), 'primary' ); ?>
-					<a class="button button-secondary fleet-manage-button" href="<?php echo esc_url( $manage_url ); ?>" target="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-id="<?php echo esc_attr( $window_id ); ?>" data-fleet-window-title="<?php echo esc_attr( $site['name'] ); ?>"><?php esc_html_e( 'Manage WordPress', 'fleet-for-openstation' ); ?></a>
-				<?php endif; ?>
-				<details class="fleet-site-menu">
-					<summary aria-label="<?php esc_attr_e( 'More site actions', 'fleet-for-openstation' ); ?>"><span class="dashicons dashicons-ellipsis" aria-hidden="true"></span></summary>
-					<div class="fleet-site-menu__body">
-						<form class="fleet-action-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post"><input type="hidden" name="action" value="openstation_fleet_toggle_favorite"><input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>"><?php wp_nonce_field( 'openstation_fleet_toggle_favorite' ); ?><button class="button button-secondary" type="submit"><?php echo $agency['favorite'] ? esc_html__( 'Remove favorite', 'fleet-for-openstation' ) : esc_html__( 'Add favorite', 'fleet-for-openstation' ); ?></button></form>
-						<?php self::render_action_form( 'check', $id, __( 'Check now', 'fleet-for-openstation' ) ); ?>
-						<?php self::render_action_form( 'disconnect', $id, __( 'Disconnect', 'fleet-for-openstation' ), 'danger' ); ?>
-					</div>
-				</details>
-			</div>
-		</article>
-		<?php
-	}
-
-	/**
-	 * Render the selected site's remote management workspace.
-	 *
-	 * @param string $id      Site id.
-	 * @param array  $site    Site record.
-	 * @param string $section Requested workspace section.
-	 * @param string $notice  Notice code.
-	 */
-	private static function render_site_workspace( $id, $site, $section, $notice ) {
-		$section_definitions = array(
-			'overview' => array( __( 'Overview', 'fleet-for-openstation' ), 'dashicons-screenoptions', '' ),
-			'content'  => array( __( 'Content', 'fleet-for-openstation' ), 'dashicons-edit-page', 'posts' ),
-			'media'    => array( __( 'Media', 'fleet-for-openstation' ), 'dashicons-format-image', 'media' ),
-			'comments' => array( __( 'Comments', 'fleet-for-openstation' ), 'dashicons-admin-comments', 'comments' ),
-			'plugins'  => array( __( 'Plugins', 'fleet-for-openstation' ), 'dashicons-admin-plugins', 'plugins' ),
-			'users'    => array( __( 'Users', 'fleet-for-openstation' ), 'dashicons-admin-users', 'users' ),
-			'settings' => array( __( 'Settings', 'fleet-for-openstation' ), 'dashicons-admin-settings', 'settings' ),
-			'agency'   => array( __( 'Agency', 'fleet-for-openstation' ), 'dashicons-id-alt', '' ),
-			'api'      => array( __( 'Explorer', 'fleet-for-openstation' ), 'dashicons-rest-api', '' ),
-		);
-		$sections = array();
-		foreach ( $section_definitions as $key => $definition ) {
-			if ( '' === $definition[2] || self::supports( $site, $definition[2] ) ) {
-				$sections[ $key ] = $definition;
-			}
-		}
-		if ( ! isset( $sections[ $section ] ) ) {
-			$section = 'overview';
-		}
-		$back_url = add_query_arg( 'page', self::MENU_SLUG, admin_url( 'admin.php' ) );
-		?>
-		<div class="wrap fleet-app fleet-workspace">
-			<header class="fleet-workspace-header">
-				<div class="fleet-workspace-header__identity">
-					<a class="fleet-back" href="<?php echo esc_url( $back_url ); ?>" target="fleet-hub" data-fleet-hub-window data-fleet-window-title="<?php esc_attr_e( 'Fleet', 'fleet-for-openstation' ); ?>"><span class="dashicons dashicons-arrow-left-alt2" aria-hidden="true"></span><?php esc_html_e( 'Fleet', 'fleet-for-openstation' ); ?></a>
-					<div class="fleet-workspace-title">
-						<span class="fleet-site-icon"><span class="dashicons dashicons-admin-site-alt3" aria-hidden="true"></span><span class="fleet-site-icon__status fleet-site-icon__status--active"></span></span>
-						<div>
-							<span class="fleet-eyebrow"><?php esc_html_e( 'Remote WordPress context', 'fleet-for-openstation' ); ?></span>
-							<h1><?php echo esc_html( $site['name'] ); ?></h1>
-							<p><?php echo esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ); ?> · <?php echo esc_html( $site['user_login'] ); ?></p>
-						</div>
-					</div>
-				</div>
-				<div class="fleet-remote-badge"><span class="fleet-status-dot" aria-hidden="true"></span><span><strong><?php esc_html_e( 'Remote context', 'fleet-for-openstation' ); ?></strong><small><?php esc_html_e( 'Application Password', 'fleet-for-openstation' ); ?></small></span></div>
-			</header>
-
-			<?php self::render_notice( $notice ); ?>
-			<?php if ( ! empty( $site['error'] ) ) : ?>
-				<div class="fleet-inline-error"><span class="dashicons dashicons-warning" aria-hidden="true"></span><span><?php echo esc_html( $site['error'] ); ?></span></div>
-			<?php endif; ?>
-
-			<nav class="fleet-tabs" aria-label="<?php esc_attr_e( 'Site management', 'fleet-for-openstation' ); ?>">
-				<?php foreach ( $sections as $key => $item ) : ?>
-					<a class="<?php echo $section === $key ? 'is-active' : ''; ?>" href="<?php echo esc_url( self::workspace_url( $id, $key ) ); ?>" target="<?php echo esc_attr( self::site_window_id( $id ) ); ?>" <?php echo $section === $key ? 'aria-current="page"' : ''; ?>><span class="dashicons <?php echo esc_attr( $item[1] ); ?>" aria-hidden="true"></span><?php echo esc_html( $item[0] ); ?></a>
-				<?php endforeach; ?>
-			</nav>
-			<div class="fleet-context-strip"><span class="dashicons dashicons-controls-repeat" aria-hidden="true"></span><span><?php printf( esc_html__( 'This window is now operating on %s. Every action below runs against that site.', 'fleet-for-openstation' ), '<strong>' . esc_html( wp_parse_url( $site['site_url'], PHP_URL_HOST ) ) . '</strong>' ); ?></span></div>
-
-			<main class="fleet-workspace-body">
-				<?php
-					switch ( $section ) {
-					case 'content':
-						self::render_content_workspace( $id, $site );
-						break;
-					case 'media':
-						self::render_media_workspace( $id, $site );
-						break;
-					case 'comments':
-						self::render_comments_workspace( $id, $site );
-						break;
-					case 'plugins':
-						self::render_plugins_workspace( $id, $site );
-						break;
-					case 'users':
-						self::render_users_workspace( $id, $site );
-						break;
-					case 'settings':
-						self::render_settings_workspace( $id, $site );
-						break;
-					case 'agency':
-						self::render_agency_workspace( $id, $site );
-						break;
-					case 'api':
-						self::render_api_workspace( $id, $site );
-						break;
-					default:
-						self::render_overview_workspace( $id, $site );
-						break;
-				}
-				?>
-			</main>
-		</div>
-		<?php
-	}
-
-	/**
-	 * Render remote-site overview.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_overview_workspace( $id, $site ) {
-		$settings  = self::supports( $site, 'settings' ) ? self::remote_request( $site, 'GET', 'wp/v2/settings' ) : new WP_Error( 'unsupported', __( 'Settings are not exposed by this site.', 'fleet-for-openstation' ) );
-		$posts     = self::supports( $site, 'posts' ) ? self::remote_request( $site, 'GET', 'wp/v2/posts?context=edit&status=any&per_page=5&orderby=modified&order=desc&_fields=id,title,status,modified,type' ) : array();
-		$pages     = self::supports( $site, 'pages' ) ? self::remote_request( $site, 'GET', 'wp/v2/pages?context=edit&status=any&per_page=5&orderby=modified&order=desc&_fields=id,title,status,modified,type' ) : array();
-		$status    = isset( $site['openstation']['status'] ) ? $site['openstation']['status'] : 'unknown';
-		$attention = self::attention_reasons( $site );
-		$tasks     = array(
-			'content'  => array( 'posts', 'dashicons-edit-page', __( 'Content', 'fleet-for-openstation' ), __( 'Update posts and pages.', 'fleet-for-openstation' ) ),
-			'media'    => array( 'media', 'dashicons-format-image', __( 'Media', 'fleet-for-openstation' ), __( 'Upload and describe media.', 'fleet-for-openstation' ) ),
-			'comments' => array( 'comments', 'dashicons-admin-comments', __( 'Comments', 'fleet-for-openstation' ), __( 'Moderate the conversation.', 'fleet-for-openstation' ) ),
-			'plugins'  => array( 'plugins', 'dashicons-admin-plugins', __( 'Plugins', 'fleet-for-openstation' ), __( 'Install and control plugins.', 'fleet-for-openstation' ) ),
-			'users'    => array( 'users', 'dashicons-admin-users', __( 'Users', 'fleet-for-openstation' ), __( 'Manage accounts and roles.', 'fleet-for-openstation' ) ),
-			'settings' => array( 'settings', 'dashicons-admin-settings', __( 'Settings', 'fleet-for-openstation' ), __( 'Change the site identity.', 'fleet-for-openstation' ) ),
-			'agency'   => array( '', 'dashicons-id-alt', __( 'Agency profile', 'fleet-for-openstation' ), __( 'Client details, notes, and tags.', 'fleet-for-openstation' ) ),
-			'api'      => array( '', 'dashicons-rest-api', __( 'Everything else', 'fleet-for-openstation' ), __( 'Browse every advertised REST route.', 'fleet-for-openstation' ) ),
-		);
-		?>
-		<div class="fleet-workspace-intro">
-			<div>
-				<span class="fleet-eyebrow"><?php esc_html_e( 'Site overview', 'fleet-for-openstation' ); ?></span>
-				<h2><?php esc_html_e( 'Work on this site', 'fleet-for-openstation' ); ?></h2>
-				<p><?php esc_html_e( 'Every action below runs against the selected site, not the Fleet hub.', 'fleet-for-openstation' ); ?></p>
-			</div>
-			<span class="fleet-pill fleet-pill--<?php echo esc_attr( $status ); ?>"><span class="fleet-status-dot" aria-hidden="true"></span><?php echo 'active' === $status ? esc_html__( 'OpenStation ready', 'fleet-for-openstation' ) : esc_html__( 'OpenStation needs attention', 'fleet-for-openstation' ); ?></span>
-		</div>
-
-		<div class="fleet-overview-grid">
-			<?php foreach ( $tasks as $task_key => $task ) : ?>
-				<?php if ( '' !== $task[0] && ! self::supports( $site, $task[0] ) ) : ?><?php continue; ?><?php endif; ?>
-				<a class="fleet-task-card" href="<?php echo esc_url( self::workspace_url( $id, $task_key ) ); ?>" target="<?php echo esc_attr( self::site_window_id( $id ) ); ?>">
-					<span class="fleet-task-card__icon"><span class="dashicons <?php echo esc_attr( $task[1] ); ?>" aria-hidden="true"></span></span>
-					<span><strong><?php echo esc_html( $task[2] ); ?></strong><small><?php echo esc_html( $task[3] ); ?></small></span>
-					<span class="dashicons dashicons-arrow-right-alt2" aria-hidden="true"></span>
-				</a>
-			<?php endforeach; ?>
-		</div>
-
-		<section class="fleet-panel fleet-health-panel">
-			<div class="fleet-panel__heading">
-				<div><h2><?php esc_html_e( 'Attention and Site Health', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Live checks from WordPress Core and the connection itself.', 'fleet-for-openstation' ); ?></p></div>
-				<span class="fleet-count"><?php echo esc_html( count( $attention ) ); ?></span>
-			</div>
-			<?php if ( empty( $attention ) ) : ?>
-				<div class="fleet-health-good"><span class="dashicons dashicons-yes-alt" aria-hidden="true"></span><span><strong><?php esc_html_e( 'No attention needed', 'fleet-for-openstation' ); ?></strong><small><?php esc_html_e( 'The latest available checks are clear.', 'fleet-for-openstation' ); ?></small></span></div>
-			<?php else : ?>
-				<div class="fleet-attention-list">
-					<?php foreach ( $attention as $reason ) : ?>
-						<div class="fleet-attention-item fleet-attention-item--<?php echo esc_attr( $reason[2] ); ?>"><span class="dashicons dashicons-warning" aria-hidden="true"></span><span><?php echo esc_html( $reason[1] ); ?></span></div>
-					<?php endforeach; ?>
-				</div>
-			<?php endif; ?>
-		</section>
-
-		<section class="fleet-panel fleet-overview-panel">
-			<div class="fleet-panel__heading">
-				<div><h2><?php esc_html_e( 'Remote WordPress', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Live information returned by the connected site.', 'fleet-for-openstation' ); ?></p></div>
-			</div>
-			<?php if ( is_wp_error( $settings ) ) : ?>
-				<?php self::render_remote_error( $settings ); ?>
-			<?php else : ?>
-				<dl class="fleet-details">
-					<div><dt><?php esc_html_e( 'Site title', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( isset( $settings['title'] ) ? $settings['title'] : $site['name'] ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'Site address', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( $site['site_url'] ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'Timezone', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( ! empty( $settings['timezone_string'] ) ? $settings['timezone_string'] : __( 'UTC offset', 'fleet-for-openstation' ) ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'Authenticated as', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( $site['user_login'] ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'Connection', 'fleet-for-openstation' ); ?></dt><dd><?php esc_html_e( 'WordPress Application Password', 'fleet-for-openstation' ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'WordPress', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( ! empty( $site['wordpress_version'] ) ? $site['wordpress_version'] : __( 'Not reported', 'fleet-for-openstation' ) ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'REST routes', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( ! empty( $site['capabilities']['route_count'] ) ? $site['capabilities']['route_count'] : __( 'Not checked', 'fleet-for-openstation' ) ); ?></dd></div>
-				</dl>
-			<?php endif; ?>
-		</section>
-
-		<section class="fleet-panel">
-			<div class="fleet-panel__heading"><div><h2><?php esc_html_e( 'Recently changed', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'The latest posts and pages from this site.', 'fleet-for-openstation' ); ?></p></div></div>
-			<?php if ( is_wp_error( $posts ) || is_wp_error( $pages ) ) : ?>
-				<?php self::render_remote_error( is_wp_error( $posts ) ? $posts : $pages ); ?>
-			<?php else : ?>
-				<?php self::render_recent_content( array_merge( $posts, $pages ) ); ?>
-			<?php endif; ?>
-		</section>
-		<?php
-	}
-
-	/**
-	 * Render posts and pages with small Core REST editing forms.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_content_workspace( $id, $site ) {
-		$posts = self::remote_request( $site, 'GET', 'wp/v2/posts?context=edit&status=any&per_page=20&orderby=modified&order=desc&_fields=id,title,status,modified,type' );
-		$pages = self::remote_request( $site, 'GET', 'wp/v2/pages?context=edit&status=any&per_page=20&orderby=modified&order=desc&_fields=id,title,status,modified,type' );
-		?>
-		<div class="fleet-workspace-intro">
-			<div><span class="fleet-eyebrow"><?php esc_html_e( 'Remote content', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Posts and pages', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Update titles and publishing status directly on the selected site.', 'fleet-for-openstation' ); ?></p></div>
-		</div>
-		<?php if ( is_wp_error( $posts ) || is_wp_error( $pages ) ) : ?>
-			<?php self::render_remote_error( is_wp_error( $posts ) ? $posts : $pages ); ?>
-		<?php else : ?>
-			<section class="fleet-panel fleet-content-panel">
-				<div class="fleet-panel__heading"><div><h2><?php esc_html_e( 'Posts', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'The 20 most recently changed posts.', 'fleet-for-openstation' ); ?></p></div><span class="fleet-count"><?php echo esc_html( count( $posts ) ); ?></span></div>
-				<?php self::render_content_forms( $id, $posts, 'posts' ); ?>
-			</section>
-			<section class="fleet-panel fleet-content-panel">
-				<div class="fleet-panel__heading"><div><h2><?php esc_html_e( 'Pages', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'The 20 most recently changed pages.', 'fleet-for-openstation' ); ?></p></div><span class="fleet-count"><?php echo esc_html( count( $pages ) ); ?></span></div>
-				<?php self::render_content_forms( $id, $pages, 'pages' ); ?>
-			</section>
-		<?php endif; ?>
-		<?php
-	}
-
-	/**
-	 * Render editable remote content rows.
-	 *
-	 * @param string $site_id     Site id.
-	 * @param array  $items       Core REST post records.
-	 * @param string $content_type REST collection name.
-	 */
-	private static function render_content_forms( $site_id, $items, $content_type ) {
-		if ( empty( $items ) ) {
-			?>
-			<div class="fleet-panel-empty"><?php esc_html_e( 'Nothing here yet.', 'fleet-for-openstation' ); ?></div>
-			<?php
-			return;
-		}
-		foreach ( $items as $item ) {
-			if ( ! is_array( $item ) || empty( $item['id'] ) ) {
-				continue;
-			}
-			$title = isset( $item['title']['raw'] ) ? $item['title']['raw'] : ( isset( $item['title']['rendered'] ) ? wp_strip_all_tags( $item['title']['rendered'] ) : '' );
-			?>
-			<form class="fleet-content-row" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-				<input type="hidden" name="action" value="openstation_fleet_update_content">
-				<input type="hidden" name="site_id" value="<?php echo esc_attr( $site_id ); ?>">
-				<input type="hidden" name="content_id" value="<?php echo esc_attr( $item['id'] ); ?>">
-				<input type="hidden" name="content_type" value="<?php echo esc_attr( $content_type ); ?>">
-				<?php wp_nonce_field( 'openstation_fleet_update_content' ); ?>
-				<div class="fleet-content-row__main">
-					<label for="fleet-title-<?php echo esc_attr( $content_type . '-' . $item['id'] ); ?>"><?php esc_html_e( 'Title', 'fleet-for-openstation' ); ?></label>
-					<input id="fleet-title-<?php echo esc_attr( $content_type . '-' . $item['id'] ); ?>" name="title" type="text" value="<?php echo esc_attr( $title ); ?>" required>
-					<small><?php echo ! empty( $item['modified'] ) ? esc_html( sprintf( __( 'Modified %s ago', 'fleet-for-openstation' ), human_time_diff( strtotime( $item['modified'] ), time() ) ) ) : ''; ?></small>
-				</div>
-				<div class="fleet-content-row__status">
-					<label for="fleet-status-<?php echo esc_attr( $content_type . '-' . $item['id'] ); ?>"><?php esc_html_e( 'Status', 'fleet-for-openstation' ); ?></label>
-					<select id="fleet-status-<?php echo esc_attr( $content_type . '-' . $item['id'] ); ?>" name="status">
-						<option value="publish" <?php selected( isset( $item['status'] ) ? $item['status'] : '', 'publish' ); ?>><?php esc_html_e( 'Published', 'fleet-for-openstation' ); ?></option>
-						<option value="draft" <?php selected( isset( $item['status'] ) ? $item['status'] : '', 'draft' ); ?>><?php esc_html_e( 'Draft', 'fleet-for-openstation' ); ?></option>
-						<option value="pending" <?php selected( isset( $item['status'] ) ? $item['status'] : '', 'pending' ); ?>><?php esc_html_e( 'Pending review', 'fleet-for-openstation' ); ?></option>
-						<option value="future" <?php selected( isset( $item['status'] ) ? $item['status'] : '', 'future' ); ?>><?php esc_html_e( 'Scheduled', 'fleet-for-openstation' ); ?></option>
-						<option value="private" <?php selected( isset( $item['status'] ) ? $item['status'] : '', 'private' ); ?>><?php esc_html_e( 'Private', 'fleet-for-openstation' ); ?></option>
-						<option value="trash" <?php selected( isset( $item['status'] ) ? $item['status'] : '', 'trash' ); ?>><?php esc_html_e( 'Trash', 'fleet-for-openstation' ); ?></option>
-					</select>
-				</div>
-				<button class="button button-secondary" type="submit"><?php esc_html_e( 'Update', 'fleet-for-openstation' ); ?></button>
-			</form>
-			<?php
-		}
-	}
-
-	/**
-	 * Render Core comment moderation controls.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_comments_workspace( $id, $site ) {
-		$comments = self::remote_request( $site, 'GET', 'wp/v2/comments?context=edit&status=all&per_page=30&orderby=date&order=desc' );
-		?>
-		<div class="fleet-workspace-intro">
-			<div><span class="fleet-eyebrow"><?php esc_html_e( 'Remote comments', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Moderation queue', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Approve, hold, mark as spam, or trash comments through WordPress Core.', 'fleet-for-openstation' ); ?></p></div>
-		</div>
-		<?php if ( is_wp_error( $comments ) ) : ?>
-			<?php self::render_remote_error( $comments ); ?>
-		<?php elseif ( empty( $comments ) ) : ?>
-			<div class="fleet-panel-empty"><?php esc_html_e( 'No comments found.', 'fleet-for-openstation' ); ?></div>
-		<?php else : ?>
-			<div class="fleet-comment-list">
-				<?php foreach ( $comments as $comment ) : ?>
-					<?php if ( empty( $comment['id'] ) ) : ?><?php continue; ?><?php endif; ?>
-					<form class="fleet-comment-card" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-						<input type="hidden" name="action" value="openstation_fleet_update_comment">
-						<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-						<input type="hidden" name="comment_id" value="<?php echo esc_attr( $comment['id'] ); ?>">
-						<?php wp_nonce_field( 'openstation_fleet_update_comment' ); ?>
-						<div class="fleet-comment-card__body">
-							<div><strong><?php echo esc_html( ! empty( $comment['author_name'] ) ? $comment['author_name'] : __( 'Anonymous', 'fleet-for-openstation' ) ); ?></strong><span class="fleet-mini-badge"><?php echo esc_html( isset( $comment['status'] ) ? $comment['status'] : 'hold' ); ?></span></div>
-							<p><?php echo esc_html( wp_trim_words( wp_strip_all_tags( isset( $comment['content']['rendered'] ) ? $comment['content']['rendered'] : '' ), 42 ) ); ?></p>
-							<small><?php echo ! empty( $comment['date'] ) ? esc_html( human_time_diff( strtotime( $comment['date'] ), time() ) . ' ' . __( 'ago', 'fleet-for-openstation' ) ) : ''; ?></small>
-						</div>
-						<div class="fleet-comment-card__action">
-							<label class="screen-reader-text" for="fleet-comment-status-<?php echo esc_attr( $comment['id'] ); ?>"><?php esc_html_e( 'Comment status', 'fleet-for-openstation' ); ?></label>
-							<select id="fleet-comment-status-<?php echo esc_attr( $comment['id'] ); ?>" name="status">
-								<?php foreach ( array( 'approved' => __( 'Approved', 'fleet-for-openstation' ), 'hold' => __( 'Pending', 'fleet-for-openstation' ), 'spam' => __( 'Spam', 'fleet-for-openstation' ), 'trash' => __( 'Trash', 'fleet-for-openstation' ) ) as $value => $label ) : ?>
-									<option value="<?php echo esc_attr( $value ); ?>" <?php selected( isset( $comment['status'] ) ? $comment['status'] : 'hold', $value ); ?>><?php echo esc_html( $label ); ?></option>
-								<?php endforeach; ?>
-							</select>
-							<button class="button button-secondary" type="submit"><?php esc_html_e( 'Update', 'fleet-for-openstation' ); ?></button>
-						</div>
-					</form>
-				<?php endforeach; ?>
-			</div>
-		<?php endif; ?>
-		<?php
-	}
-
-	/**
-	 * Render Media Library upload and metadata controls.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_media_workspace( $id, $site ) {
-		$media = self::remote_request( $site, 'GET', 'wp/v2/media?context=edit&per_page=24&orderby=date&order=desc&_fields=id,title,alt_text,caption,media_type,mime_type,source_url,date' );
-		?>
-		<div class="fleet-workspace-intro">
-			<div><span class="fleet-eyebrow"><?php esc_html_e( 'Remote media', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Media Library', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Upload files and maintain accessible media details on this site.', 'fleet-for-openstation' ); ?></p></div>
-		</div>
-		<form class="fleet-panel fleet-upload-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post" enctype="multipart/form-data">
-			<input type="hidden" name="action" value="openstation_fleet_upload_media">
-			<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-			<?php wp_nonce_field( 'openstation_fleet_upload_media' ); ?>
-			<div><label for="fleet-media-file"><strong><?php esc_html_e( 'Upload to this site', 'fleet-for-openstation' ); ?></strong></label><small><?php esc_html_e( 'Images, audio, video, or PDF up to 10 MB.', 'fleet-for-openstation' ); ?></small></div>
-			<input id="fleet-media-file" name="media_file" type="file" accept="image/*,audio/*,video/*,application/pdf" required>
-			<button class="button button-primary" type="submit"><?php esc_html_e( 'Upload file', 'fleet-for-openstation' ); ?></button>
-		</form>
-		<?php if ( is_wp_error( $media ) ) : ?>
-			<?php self::render_remote_error( $media ); ?>
-		<?php elseif ( empty( $media ) ) : ?>
-			<div class="fleet-panel-empty"><?php esc_html_e( 'No media found.', 'fleet-for-openstation' ); ?></div>
-		<?php else : ?>
-			<div class="fleet-media-grid">
-				<?php foreach ( $media as $item ) : ?>
-					<?php if ( empty( $item['id'] ) ) : ?><?php continue; ?><?php endif; ?>
-					<form class="fleet-media-card" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-						<input type="hidden" name="action" value="openstation_fleet_update_media">
-						<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-						<input type="hidden" name="media_id" value="<?php echo esc_attr( $item['id'] ); ?>">
-						<?php wp_nonce_field( 'openstation_fleet_update_media' ); ?>
-						<div class="fleet-media-card__preview">
-							<?php if ( 'image' === ( isset( $item['media_type'] ) ? $item['media_type'] : '' ) && ! empty( $item['source_url'] ) ) : ?>
-								<img src="<?php echo esc_url( $item['source_url'] ); ?>" alt="">
-							<?php else : ?>
-								<span class="dashicons dashicons-media-default" aria-hidden="true"></span>
-							<?php endif; ?>
-						</div>
-						<div class="fleet-field"><label for="fleet-media-title-<?php echo esc_attr( $item['id'] ); ?>"><?php esc_html_e( 'Title', 'fleet-for-openstation' ); ?></label><input id="fleet-media-title-<?php echo esc_attr( $item['id'] ); ?>" name="title" type="text" value="<?php echo esc_attr( isset( $item['title']['raw'] ) ? $item['title']['raw'] : ( isset( $item['title']['rendered'] ) ? wp_strip_all_tags( $item['title']['rendered'] ) : '' ) ); ?>"></div>
-						<div class="fleet-field"><label for="fleet-media-alt-<?php echo esc_attr( $item['id'] ); ?>"><?php esc_html_e( 'Alt text', 'fleet-for-openstation' ); ?></label><input id="fleet-media-alt-<?php echo esc_attr( $item['id'] ); ?>" name="alt_text" type="text" value="<?php echo esc_attr( isset( $item['alt_text'] ) ? $item['alt_text'] : '' ); ?>"></div>
-						<div class="fleet-field"><label for="fleet-media-caption-<?php echo esc_attr( $item['id'] ); ?>"><?php esc_html_e( 'Caption', 'fleet-for-openstation' ); ?></label><textarea id="fleet-media-caption-<?php echo esc_attr( $item['id'] ); ?>" name="caption" rows="2"><?php echo esc_textarea( isset( $item['caption']['raw'] ) ? $item['caption']['raw'] : '' ); ?></textarea></div>
-						<button class="button button-secondary" type="submit"><?php esc_html_e( 'Save details', 'fleet-for-openstation' ); ?></button>
-					</form>
-				<?php endforeach; ?>
-			</div>
-		<?php endif; ?>
-		<?php
-	}
-
-	/**
-	 * Render Core user and role management.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_users_workspace( $id, $site ) {
-		$users = self::remote_request( $site, 'GET', 'wp/v2/users?context=edit&per_page=50&orderby=name&_fields=id,username,name,email,roles,avatar_urls' );
-		?>
-		<div class="fleet-workspace-intro">
-			<div><span class="fleet-eyebrow"><?php esc_html_e( 'Remote users', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Accounts and roles', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Create accounts or update common profile and role fields.', 'fleet-for-openstation' ); ?></p></div>
-		</div>
-		<form class="fleet-panel fleet-user-create" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-			<input type="hidden" name="action" value="openstation_fleet_create_user">
-			<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-			<?php wp_nonce_field( 'openstation_fleet_create_user' ); ?>
-			<div class="fleet-panel__heading"><div><h2><?php esc_html_e( 'Add user', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Passwords are sent once over the authenticated connection and are never stored by Fleet.', 'fleet-for-openstation' ); ?></p></div></div>
-			<div class="fleet-form-grid fleet-form-grid--four">
-				<div class="fleet-field"><label for="fleet-user-username"><?php esc_html_e( 'Username', 'fleet-for-openstation' ); ?></label><input id="fleet-user-username" name="username" type="text" required></div>
-				<div class="fleet-field"><label for="fleet-user-email"><?php esc_html_e( 'Email', 'fleet-for-openstation' ); ?></label><input id="fleet-user-email" name="email" type="email" required></div>
-				<div class="fleet-field"><label for="fleet-user-password"><?php esc_html_e( 'Password', 'fleet-for-openstation' ); ?></label><input id="fleet-user-password" name="password" type="password" minlength="12" autocomplete="new-password" required></div>
-				<div class="fleet-field"><label for="fleet-user-role"><?php esc_html_e( 'Role', 'fleet-for-openstation' ); ?></label><select id="fleet-user-role" name="role"><?php foreach ( self::editable_roles() as $role ) : ?><option value="<?php echo esc_attr( $role ); ?>"><?php echo esc_html( ucfirst( $role ) ); ?></option><?php endforeach; ?></select></div>
-			</div>
-			<button class="button button-primary" type="submit"><?php esc_html_e( 'Create user', 'fleet-for-openstation' ); ?></button>
-		</form>
-		<?php if ( is_wp_error( $users ) ) : ?>
-			<?php self::render_remote_error( $users ); ?>
-		<?php else : ?>
-			<div class="fleet-user-list">
-				<?php foreach ( $users as $user ) : ?>
-					<?php if ( empty( $user['id'] ) ) : ?><?php continue; ?><?php endif; ?>
-					<form class="fleet-user-row" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-						<input type="hidden" name="action" value="openstation_fleet_update_user">
-						<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-						<input type="hidden" name="user_id" value="<?php echo esc_attr( $user['id'] ); ?>">
-						<?php wp_nonce_field( 'openstation_fleet_update_user' ); ?>
-						<span class="fleet-user-avatar"><?php if ( ! empty( $user['avatar_urls']['48'] ) ) : ?><img src="<?php echo esc_url( $user['avatar_urls']['48'] ); ?>" alt=""><?php else : ?><span class="dashicons dashicons-admin-users" aria-hidden="true"></span><?php endif; ?></span>
-						<div><strong><?php echo esc_html( isset( $user['username'] ) ? $user['username'] : '' ); ?></strong><small><?php echo esc_html( implode( ', ', isset( $user['roles'] ) && is_array( $user['roles'] ) ? $user['roles'] : array() ) ); ?></small></div>
-						<div class="fleet-field"><label class="screen-reader-text" for="fleet-user-name-<?php echo esc_attr( $user['id'] ); ?>"><?php esc_html_e( 'Display name', 'fleet-for-openstation' ); ?></label><input id="fleet-user-name-<?php echo esc_attr( $user['id'] ); ?>" name="name" type="text" value="<?php echo esc_attr( isset( $user['name'] ) ? $user['name'] : '' ); ?>" required></div>
-						<div class="fleet-field"><label class="screen-reader-text" for="fleet-user-email-<?php echo esc_attr( $user['id'] ); ?>"><?php esc_html_e( 'Email', 'fleet-for-openstation' ); ?></label><input id="fleet-user-email-<?php echo esc_attr( $user['id'] ); ?>" name="email" type="email" value="<?php echo esc_attr( isset( $user['email'] ) ? $user['email'] : '' ); ?>" required></div>
-						<div class="fleet-field"><label class="screen-reader-text" for="fleet-user-role-<?php echo esc_attr( $user['id'] ); ?>"><?php esc_html_e( 'Role', 'fleet-for-openstation' ); ?></label><select id="fleet-user-role-<?php echo esc_attr( $user['id'] ); ?>" name="role"><?php foreach ( self::editable_roles() as $role ) : ?><option value="<?php echo esc_attr( $role ); ?>" <?php selected( isset( $user['roles'][0] ) ? $user['roles'][0] : 'subscriber', $role ); ?>><?php echo esc_html( ucfirst( $role ) ); ?></option><?php endforeach; ?></select></div>
-						<button class="button button-secondary" type="submit"><?php esc_html_e( 'Save', 'fleet-for-openstation' ); ?></button>
-					</form>
-				<?php endforeach; ?>
-			</div>
-		<?php endif; ?>
-		<?php
-	}
-
-	/**
-	 * Render hub-side agency metadata for one site.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_agency_workspace( $id, $site ) {
-		$agency    = $site['agency'];
-		$attention = self::attention_reasons( $site );
-		?>
-		<div class="fleet-workspace-intro">
-			<div><span class="fleet-eyebrow"><?php esc_html_e( 'Hub-only details', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Agency profile', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'These notes stay on the Fleet hub and are never sent to the managed site.', 'fleet-for-openstation' ); ?></p></div>
-		</div>
-		<div class="fleet-api-layout">
-			<form class="fleet-panel fleet-settings-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-				<input type="hidden" name="action" value="openstation_fleet_update_profile">
-				<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-				<?php wp_nonce_field( 'openstation_fleet_update_profile' ); ?>
-				<div class="fleet-field"><label for="fleet-client-name"><?php esc_html_e( 'Client name', 'fleet-for-openstation' ); ?></label><input id="fleet-client-name" name="client_name" type="text" value="<?php echo esc_attr( $agency['client_name'] ); ?>"></div>
-				<div class="fleet-field"><label for="fleet-plan-status"><?php esc_html_e( 'Maintenance plan', 'fleet-for-openstation' ); ?></label><select id="fleet-plan-status" name="plan_status"><option value="none" <?php selected( $agency['plan_status'], 'none' ); ?>><?php esc_html_e( 'Not assigned', 'fleet-for-openstation' ); ?></option><option value="active" <?php selected( $agency['plan_status'], 'active' ); ?>><?php esc_html_e( 'Active', 'fleet-for-openstation' ); ?></option><option value="paused" <?php selected( $agency['plan_status'], 'paused' ); ?>><?php esc_html_e( 'Paused', 'fleet-for-openstation' ); ?></option><option value="ended" <?php selected( $agency['plan_status'], 'ended' ); ?>><?php esc_html_e( 'Ended', 'fleet-for-openstation' ); ?></option></select></div>
-				<div class="fleet-field"><label for="fleet-site-tags"><?php esc_html_e( 'Tags', 'fleet-for-openstation' ); ?></label><input id="fleet-site-tags" name="tags" type="text" value="<?php echo esc_attr( implode( ', ', $agency['tags'] ) ); ?>" placeholder="client, ecommerce, priority"></div>
-				<div class="fleet-field"><label for="fleet-site-notes"><?php esc_html_e( 'Private notes', 'fleet-for-openstation' ); ?></label><textarea id="fleet-site-notes" name="notes" rows="7"><?php echo esc_textarea( $agency['notes'] ); ?></textarea></div>
-				<label class="fleet-check"><input name="favorite" type="checkbox" value="1" <?php checked( $agency['favorite'] ); ?>><?php esc_html_e( 'Favorite this site', 'fleet-for-openstation' ); ?></label>
-				<div class="fleet-form-actions"><button class="button button-primary" type="submit"><?php esc_html_e( 'Save agency profile', 'fleet-for-openstation' ); ?></button></div>
-			</form>
-			<section class="fleet-panel">
-				<div class="fleet-panel__heading"><div><h2><?php esc_html_e( 'Connection inventory', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Discovered capabilities and current attention items.', 'fleet-for-openstation' ); ?></p></div></div>
-				<dl class="fleet-details fleet-details--single">
-					<div><dt><?php esc_html_e( 'WordPress', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( $site['wordpress_version'] ? $site['wordpress_version'] : __( 'Not reported', 'fleet-for-openstation' ) ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'REST routes', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( isset( $site['capabilities']['route_count'] ) ? $site['capabilities']['route_count'] : 0 ); ?></dd></div>
-					<div><dt><?php esc_html_e( 'Namespaces', 'fleet-for-openstation' ); ?></dt><dd><?php echo esc_html( ! empty( $site['capabilities']['namespaces'] ) ? implode( ', ', array_slice( $site['capabilities']['namespaces'], 0, 12 ) ) : __( 'Not checked', 'fleet-for-openstation' ) ); ?></dd></div>
-				</dl>
-				<div class="fleet-attention-list fleet-attention-list--profile">
-					<?php if ( empty( $attention ) ) : ?><div class="fleet-health-good"><span class="dashicons dashicons-yes-alt" aria-hidden="true"></span><strong><?php esc_html_e( 'No attention needed', 'fleet-for-openstation' ); ?></strong></div><?php endif; ?>
-					<?php foreach ( $attention as $reason ) : ?><div class="fleet-attention-item fleet-attention-item--<?php echo esc_attr( $reason[2] ); ?>"><span class="dashicons dashicons-warning" aria-hidden="true"></span><?php echo esc_html( $reason[1] ); ?></div><?php endforeach; ?>
-				</div>
-			</section>
-		</div>
-		<?php
-	}
-
-	/**
-	 * Render installed remote plugins and activation controls.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_plugins_workspace( $id, $site ) {
-		$plugins = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' );
-		?>
-		<div class="fleet-workspace-intro">
-			<div><span class="fleet-eyebrow"><?php esc_html_e( 'Remote plugins', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Plugins', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'Install WordPress.org plugins, then activate or deactivate them through WordPress Core.', 'fleet-for-openstation' ); ?></p></div>
-		</div>
-		<form class="fleet-panel fleet-plugin-install" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-			<input type="hidden" name="action" value="openstation_fleet_install_plugin">
-			<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-			<?php wp_nonce_field( 'openstation_fleet_install_plugin' ); ?>
-			<div><label for="fleet-plugin-slug"><strong><?php esc_html_e( 'Install from WordPress.org', 'fleet-for-openstation' ); ?></strong></label><small><?php esc_html_e( 'Enter the directory slug, such as akismet.', 'fleet-for-openstation' ); ?></small></div>
-			<input id="fleet-plugin-slug" name="plugin_slug" type="text" pattern="[a-z0-9][a-z0-9._-]*" placeholder="plugin-slug" required>
-			<label class="screen-reader-text" for="fleet-plugin-install-status"><?php esc_html_e( 'Activation status', 'fleet-for-openstation' ); ?></label>
-			<select id="fleet-plugin-install-status" name="status"><option value="active"><?php esc_html_e( 'Install and activate', 'fleet-for-openstation' ); ?></option><option value="inactive"><?php esc_html_e( 'Install only', 'fleet-for-openstation' ); ?></option></select>
-			<button class="button button-primary" type="submit"><?php esc_html_e( 'Install', 'fleet-for-openstation' ); ?></button>
-		</form>
-		<?php if ( is_wp_error( $plugins ) ) : ?>
-			<?php self::render_remote_error( $plugins ); ?>
-		<?php else : ?>
-			<div class="fleet-plugin-list">
-				<?php foreach ( $plugins as $plugin ) : ?>
-					<?php
-					if ( ! is_array( $plugin ) || empty( $plugin['plugin'] ) ) {
-						continue;
-					}
-					$plugin_id       = (string) $plugin['plugin'];
-					$plugin_status   = isset( $plugin['status'] ) ? (string) $plugin['status'] : 'inactive';
-					$is_openstation  = self::PLUGIN_REST_ID === $plugin_id;
-					$is_network      = 'network-active' === $plugin_status;
-					$is_active       = in_array( $plugin_status, array( 'active', 'network-active' ), true );
-					$next_status     = $is_active ? 'inactive' : 'active';
-					$action_label    = $is_active ? __( 'Deactivate', 'fleet-for-openstation' ) : __( 'Activate', 'fleet-for-openstation' );
-					$display_name    = isset( $plugin['name'] ) ? wp_strip_all_tags( $plugin['name'] ) : $plugin_id;
-					?>
-					<article class="fleet-plugin-card">
-						<span class="fleet-plugin-card__icon"><span class="dashicons <?php echo $is_openstation ? 'dashicons-desktop' : 'dashicons-admin-plugins'; ?>" aria-hidden="true"></span></span>
-						<div class="fleet-plugin-card__copy">
-							<div><h3><?php echo esc_html( $display_name ); ?></h3><?php if ( $is_openstation ) : ?><span class="fleet-mini-badge"><?php esc_html_e( 'OpenStation', 'fleet-for-openstation' ); ?></span><?php endif; ?></div>
-							<p><?php echo ! empty( $plugin['description']['raw'] ) ? esc_html( wp_trim_words( wp_strip_all_tags( $plugin['description']['raw'] ), 22 ) ) : esc_html( $plugin_id ); ?></p>
-							<small><?php echo ! empty( $plugin['version'] ) ? esc_html( sprintf( __( 'Version %s', 'fleet-for-openstation' ), $plugin['version'] ) ) : ''; ?></small>
-						</div>
-						<div class="fleet-plugin-card__action">
-							<span class="fleet-pill fleet-pill--<?php echo $is_active ? 'active' : 'inactive'; ?>"><span class="fleet-status-dot" aria-hidden="true"></span><?php echo $is_active ? esc_html__( 'Active', 'fleet-for-openstation' ) : esc_html__( 'Inactive', 'fleet-for-openstation' ); ?></span>
-							<?php if ( ! $is_network && ! ( $is_openstation && $is_active ) ) : ?>
-								<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-									<input type="hidden" name="action" value="openstation_fleet_update_plugin">
-									<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-									<input type="hidden" name="plugin" value="<?php echo esc_attr( $plugin_id ); ?>">
-									<input type="hidden" name="status" value="<?php echo esc_attr( $next_status ); ?>">
-									<?php wp_nonce_field( 'openstation_fleet_update_plugin' ); ?>
-									<button class="button button-secondary" type="submit"><?php echo esc_html( $action_label ); ?></button>
-								</form>
-							<?php elseif ( $is_network ) : ?>
-								<small><?php esc_html_e( 'Network managed', 'fleet-for-openstation' ); ?></small>
-							<?php else : ?>
-								<small><?php esc_html_e( 'Required for Fleet', 'fleet-for-openstation' ); ?></small>
-							<?php endif; ?>
-						</div>
-					</article>
-				<?php endforeach; ?>
-			</div>
-		<?php endif; ?>
-		<?php
-	}
-
-	/**
-	 * Render editable Core site settings.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_settings_workspace( $id, $site ) {
-		$settings = self::remote_request( $site, 'GET', 'wp/v2/settings' );
-		$weekdays = array(
-			__( 'Sunday', 'fleet-for-openstation' ),
-			__( 'Monday', 'fleet-for-openstation' ),
-			__( 'Tuesday', 'fleet-for-openstation' ),
-			__( 'Wednesday', 'fleet-for-openstation' ),
-			__( 'Thursday', 'fleet-for-openstation' ),
-			__( 'Friday', 'fleet-for-openstation' ),
-			__( 'Saturday', 'fleet-for-openstation' ),
-		);
-		?>
-		<div class="fleet-workspace-intro">
-			<div><span class="fleet-eyebrow"><?php esc_html_e( 'Remote settings', 'fleet-for-openstation' ); ?></span><h2><?php esc_html_e( 'Site settings', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'These values belong to the selected site, not the Fleet hub.', 'fleet-for-openstation' ); ?></p></div>
-		</div>
-		<?php if ( is_wp_error( $settings ) ) : ?>
-			<?php self::render_remote_error( $settings ); ?>
-		<?php else : ?>
-			<form class="fleet-panel fleet-settings-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-				<input type="hidden" name="action" value="openstation_fleet_update_settings">
-				<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-				<?php wp_nonce_field( 'openstation_fleet_update_settings' ); ?>
-				<div class="fleet-field fleet-field--wide"><label for="fleet-setting-title"><?php esc_html_e( 'Site title', 'fleet-for-openstation' ); ?></label><input id="fleet-setting-title" name="title" type="text" value="<?php echo esc_attr( isset( $settings['title'] ) ? $settings['title'] : '' ); ?>" required></div>
-				<div class="fleet-field fleet-field--wide"><label for="fleet-setting-description"><?php esc_html_e( 'Tagline', 'fleet-for-openstation' ); ?></label><input id="fleet-setting-description" name="description" type="text" value="<?php echo esc_attr( isset( $settings['description'] ) ? $settings['description'] : '' ); ?>"></div>
-				<div class="fleet-settings-grid">
-					<div class="fleet-field"><label for="fleet-setting-timezone"><?php esc_html_e( 'Timezone', 'fleet-for-openstation' ); ?></label><input id="fleet-setting-timezone" name="timezone_string" type="text" placeholder="America/Chicago" value="<?php echo esc_attr( isset( $settings['timezone_string'] ) ? $settings['timezone_string'] : '' ); ?>"></div>
-					<div class="fleet-field"><label for="fleet-setting-week"><?php esc_html_e( 'Week starts on', 'fleet-for-openstation' ); ?></label><select id="fleet-setting-week" name="start_of_week"><?php foreach ( $weekdays as $day_number => $day_name ) : ?><option value="<?php echo esc_attr( $day_number ); ?>" <?php selected( isset( $settings['start_of_week'] ) ? (int) $settings['start_of_week'] : 0, $day_number ); ?>><?php echo esc_html( $day_name ); ?></option><?php endforeach; ?></select></div>
-					<div class="fleet-field"><label for="fleet-setting-date"><?php esc_html_e( 'Date format', 'fleet-for-openstation' ); ?></label><input id="fleet-setting-date" name="date_format" type="text" value="<?php echo esc_attr( isset( $settings['date_format'] ) ? $settings['date_format'] : 'F j, Y' ); ?>"></div>
-					<div class="fleet-field"><label for="fleet-setting-time"><?php esc_html_e( 'Time format', 'fleet-for-openstation' ); ?></label><input id="fleet-setting-time" name="time_format" type="text" value="<?php echo esc_attr( isset( $settings['time_format'] ) ? $settings['time_format'] : 'g:i a' ); ?>"></div>
-				</div>
-				<div class="fleet-form-actions"><button class="button button-primary" type="submit"><?php esc_html_e( 'Save site settings', 'fleet-for-openstation' ); ?></button><span><?php esc_html_e( 'Saved directly to the connected WordPress site.', 'fleet-for-openstation' ); ?></span></div>
-			</form>
-		<?php endif; ?>
-		<?php
-	}
-
-	/**
-	 * Render the full REST API console for routes without a dedicated Fleet UI.
-	 *
-	 * @param string $id   Site id.
-	 * @param array  $site Site record.
-	 */
-	private static function render_api_workspace( $id, $site ) {
-		$result  = self::take_api_result( $id );
-		$root    = self::remote_request( $site, 'GET', '' );
-		$catalog = is_wp_error( $root ) ? array() : self::api_route_catalog( $root );
-		$core_routes = count(
-			array_filter(
-				$catalog,
-				static function ( $item ) {
-					return 0 === strpos( $item['route'], '/wp/v2' ) || 0 === strpos( $item['route'], '/wp-site-health/v1' );
-				}
-			)
-		);
-		$other_routes = count( $catalog ) - $core_routes;
-		?>
-		<div class="fleet-workspace-intro">
-			<div>
-				<span class="fleet-eyebrow"><?php esc_html_e( 'Complete available surface', 'fleet-for-openstation' ); ?></span>
-				<h2><?php esc_html_e( 'WordPress API Explorer', 'fleet-for-openstation' ); ?></h2>
-				<p><?php esc_html_e( 'Browse every REST route this site advertises, including WordPress Core and installed plugins, then run it with the permissions of the approved account.', 'fleet-for-openstation' ); ?></p>
-			</div>
-		</div>
-
-		<div class="fleet-api-coverage" role="list" aria-label="<?php esc_attr_e( 'Remote API coverage', 'fleet-for-openstation' ); ?>">
-			<div role="listitem"><span class="dashicons dashicons-edit-page" aria-hidden="true"></span><span><strong><?php esc_html_e( 'Content', 'fleet-for-openstation' ); ?></strong><small><?php esc_html_e( 'Posts, pages, media, comments, terms, revisions', 'fleet-for-openstation' ); ?></small></span></div>
-			<div role="listitem"><span class="dashicons dashicons-art" aria-hidden="true"></span><span><strong><?php esc_html_e( 'Design', 'fleet-for-openstation' ); ?></strong><small><?php esc_html_e( 'Templates, navigation, blocks, widgets, styles, fonts', 'fleet-for-openstation' ); ?></small></span></div>
-			<div role="listitem"><span class="dashicons dashicons-admin-settings" aria-hidden="true"></span><span><strong><?php esc_html_e( 'Administration', 'fleet-for-openstation' ); ?></strong><small><?php esc_html_e( 'Settings, users, plugins, themes, Site Health', 'fleet-for-openstation' ); ?></small></span></div>
-			<div role="listitem"><span class="dashicons dashicons-admin-plugins" aria-hidden="true"></span><span><strong><?php esc_html_e( 'Other namespaces', 'fleet-for-openstation' ); ?></strong><small><?php printf( esc_html__( '%1$d wp/v2 and Site Health routes · %2$d additional routes', 'fleet-for-openstation' ), esc_html( $core_routes ), esc_html( $other_routes ) ); ?></small></span></div>
-		</div>
-
-		<div class="fleet-api-layout">
-			<form class="fleet-panel fleet-api-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-				<input type="hidden" name="action" value="openstation_fleet_api_request">
-				<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-				<?php wp_nonce_field( 'openstation_fleet_api_request' ); ?>
-				<div class="fleet-api-route">
-					<label for="fleet-api-method" class="screen-reader-text"><?php esc_html_e( 'HTTP method', 'fleet-for-openstation' ); ?></label>
-					<select id="fleet-api-method" name="api_method">
-						<?php foreach ( array( 'GET', 'POST', 'PUT', 'PATCH', 'DELETE' ) as $method ) : ?>
-							<option value="<?php echo esc_attr( $method ); ?>"><?php echo esc_html( $method ); ?></option>
-						<?php endforeach; ?>
-					</select>
-					<label for="fleet-api-route" class="screen-reader-text"><?php esc_html_e( 'REST route', 'fleet-for-openstation' ); ?></label>
-					<input id="fleet-api-route" name="api_route" type="text" list="fleet-api-routes" placeholder="wp/v2/users?context=edit" required>
-					<datalist id="fleet-api-routes">
-						<?php foreach ( $catalog as $item ) : ?><option value="<?php echo esc_attr( ltrim( $item['route'], '/' ) ); ?>"></option><?php endforeach; ?>
-					</datalist>
-				</div>
-				<div class="fleet-field fleet-field--wide">
-					<label for="fleet-api-body"><?php esc_html_e( 'JSON body', 'fleet-for-openstation' ); ?> <small><?php esc_html_e( '(optional)', 'fleet-for-openstation' ); ?></small></label>
-					<textarea id="fleet-api-body" name="api_body" rows="12" spellcheck="false" placeholder="{&#10;  &quot;title&quot;: &quot;Updated from Fleet&quot;&#10;}"></textarea>
-				</div>
-				<div class="fleet-form-actions">
-					<button class="button button-primary" type="submit"><?php esc_html_e( 'Send API request', 'fleet-for-openstation' ); ?></button>
-					<span><?php echo esc_html( trailingslashit( $site['rest_url'] ) ); ?></span>
-				</div>
-			</form>
-
-			<section class="fleet-panel fleet-api-response">
-				<div class="fleet-panel__heading">
-					<div><h2><?php esc_html_e( 'Response', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'The latest response is kept only long enough to display it here.', 'fleet-for-openstation' ); ?></p></div>
-				</div>
-				<?php if ( empty( $result ) ) : ?>
-					<div class="fleet-panel-empty"><?php esc_html_e( 'Send a request to see its JSON response.', 'fleet-for-openstation' ); ?></div>
-				<?php else : ?>
-					<p><code><?php echo esc_html( $result['method'] . ' /' . ltrim( $result['route'], '/' ) ); ?></code></p>
-					<pre><code><?php echo esc_html( wp_json_encode( $result['data'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) ); ?></code></pre>
-				<?php endif; ?>
-			</section>
-		</div>
-
-		<section class="fleet-panel fleet-route-explorer">
-			<div class="fleet-panel__heading">
-				<div><h2><?php esc_html_e( 'Available routes', 'fleet-for-openstation' ); ?></h2><p><?php esc_html_e( 'This inventory comes live from the selected site. Route placeholders such as (?P<id>[\d]+) must be replaced with a real value before sending.', 'fleet-for-openstation' ); ?></p></div>
-				<span class="fleet-count"><?php echo esc_html( count( $catalog ) ); ?></span>
-			</div>
-			<?php if ( is_wp_error( $root ) ) : ?>
-				<?php self::render_remote_error( $root ); ?>
-			<?php elseif ( empty( $catalog ) ) : ?>
-				<div class="fleet-panel-empty"><?php esc_html_e( 'This site did not advertise any usable REST routes.', 'fleet-for-openstation' ); ?></div>
-			<?php else : ?>
-				<label class="fleet-route-search"><span class="dashicons dashicons-search" aria-hidden="true"></span><span class="screen-reader-text"><?php esc_html_e( 'Filter routes', 'fleet-for-openstation' ); ?></span><input type="search" data-fleet-route-filter placeholder="<?php esc_attr_e( 'Filter routes, namespaces, or methods', 'fleet-for-openstation' ); ?>"></label>
-				<div class="fleet-route-list">
-					<?php foreach ( $catalog as $item ) : ?>
-						<?php $default_method = in_array( 'GET', $item['methods'], true ) ? 'GET' : $item['methods'][0]; ?>
-						<button class="fleet-route-card" type="button" data-fleet-api-route="<?php echo esc_attr( ltrim( $item['route'], '/' ) ); ?>" data-fleet-api-method="<?php echo esc_attr( $default_method ); ?>">
-							<span class="fleet-route-card__methods"><?php foreach ( $item['methods'] as $method ) : ?><span class="fleet-method fleet-method--<?php echo esc_attr( strtolower( $method ) ); ?>"><?php echo esc_html( $method ); ?></span><?php endforeach; ?></span>
-							<code><?php echo esc_html( $item['route'] ); ?></code>
-							<span class="fleet-route-card__meta"><?php echo esc_html( $item['namespace'] ? $item['namespace'] : __( 'root', 'fleet-for-openstation' ) ); ?> · <?php printf( esc_html( _n( '%d argument', '%d arguments', $item['arg_count'], 'fleet-for-openstation' ) ), esc_html( $item['arg_count'] ) ); ?></span>
-						</button>
-					<?php endforeach; ?>
-				</div>
-			<?php endif; ?>
-		</section>
-		<?php
-	}
-
-	/**
-	 * Render a compact list of recent posts and pages.
-	 *
-	 * @param array $items Core REST post records.
-	 */
-	private static function render_recent_content( $items ) {
-		usort(
-			$items,
-			function ( $a, $b ) {
-				return strcmp( isset( $b['modified'] ) ? $b['modified'] : '', isset( $a['modified'] ) ? $a['modified'] : '' );
-			}
-		);
-		$items = array_slice( $items, 0, 6 );
-		if ( empty( $items ) ) {
-			?><div class="fleet-panel-empty"><?php esc_html_e( 'No posts or pages yet.', 'fleet-for-openstation' ); ?></div><?php
-			return;
-		}
-		?>
-		<div class="fleet-recent-list">
-			<?php foreach ( $items as $item ) : ?>
-				<div class="fleet-recent-item">
-					<span class="fleet-recent-item__icon"><span class="dashicons <?php echo isset( $item['type'] ) && 'page' === $item['type'] ? 'dashicons-admin-page' : 'dashicons-admin-post'; ?>" aria-hidden="true"></span></span>
-					<span><strong><?php echo esc_html( isset( $item['title']['rendered'] ) ? wp_strip_all_tags( $item['title']['rendered'] ) : __( '(Untitled)', 'fleet-for-openstation' ) ); ?></strong><small><?php echo esc_html( ucfirst( isset( $item['status'] ) ? $item['status'] : 'unknown' ) ); ?></small></span>
-					<time><?php echo ! empty( $item['modified'] ) ? esc_html( human_time_diff( strtotime( $item['modified'] ), time() ) . ' ' . __( 'ago', 'fleet-for-openstation' ) ) : ''; ?></time>
-				</div>
-			<?php endforeach; ?>
-		</div>
-		<?php
-	}
-
-	/**
-	 * Render a remote request error in the workspace.
-	 *
-	 * @param WP_Error $error Remote request error.
-	 */
-	private static function render_remote_error( $error ) {
-		?>
-		<div class="fleet-remote-error"><span class="dashicons dashicons-cloud" aria-hidden="true"></span><div><strong><?php esc_html_e( 'The remote site did not answer this request.', 'fleet-for-openstation' ); ?></strong><p><?php echo esc_html( $error->get_error_message() ); ?></p></div></div>
-		<?php
-	}
-
-	/**
-	 * Build a URL for a connected site's workspace section.
-	 *
-	 * @param string $id      Site id.
-	 * @param string $section Workspace section.
-	 * @param string $notice  Optional fixed notice code.
-	 * @return string
-	 */
-	private static function workspace_url( $id, $section = 'overview', $notice = '' ) {
-		$args = array(
-			'page'          => self::MENU_SLUG,
-			'site_id'       => sanitize_key( $id ),
-			'fleet_section' => sanitize_key( $section ),
-		);
-		if ( '' !== $notice ) {
-			$args['fleet_notice'] = sanitize_key( $notice );
-		}
-		return add_query_arg( $args, admin_url( 'admin.php' ) );
-	}
-
-	/**
-	 * Build the stable OpenStation window id for one managed site.
-	 *
-	 * Keeping the site id in the shell identity lets many managed-site
-	 * workspaces remain open without changing OpenStation itself.
-	 *
-	 * @param string $id Fleet site id.
-	 * @return string
-	 */
-	private static function site_window_id( $id ) {
-		return 'fleet-site-' . sanitize_key( $id );
-	}
-
-	/**
-	 * Build a URL for one Fleet hub view.
-	 *
-	 * @param array $args Optional query arguments.
-	 * @return string
-	 */
-	private static function hub_url( $args = array() ) {
-		return add_query_arg( array_merge( array( 'page' => self::MENU_SLUG ), $args ), admin_url( 'admin.php' ) );
-	}
-
-	/**
-	 * Render a small nonce-protected action form.
-	 *
-	 * @param string $action Action suffix.
-	 * @param string $id     Site id.
-	 * @param string $label  Button label.
-	 * @param string $class  Button class suffix.
-	 */
-	private static function render_action_form( $action, $id, $label, $class = 'secondary' ) {
-		$button_class = 'primary' === $class ? 'button-primary' : 'button-secondary';
-		if ( 'danger' === $class ) {
-			$button_class = 'fleet-button-danger';
-		}
-		?>
-		<form class="fleet-action-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-			<input type="hidden" name="action" value="<?php echo esc_attr( 'openstation_fleet_' . $action ); ?>">
-			<input type="hidden" name="site_id" value="<?php echo esc_attr( $id ); ?>">
-			<?php wp_nonce_field( 'openstation_fleet_' . $action ); ?>
-			<button class="button <?php echo esc_attr( $button_class ); ?>" type="submit"><?php echo esc_html( $label ); ?></button>
-		</form>
-		<?php
-	}
-
-	/**
-	 * Render a notice selected from a fixed code map.
-	 *
-	 * @param string $code Notice code.
-	 */
-	private static function render_notice( $code ) {
-		$messages = array(
-			'connected'              => array( 'success', __( 'Site connected and ready to manage.', 'fleet-for-openstation' ) ),
-			'connected_ready'        => array( 'success', __( 'Site connected. OpenStation is installed, active, and ready to manage.', 'fleet-for-openstation' ) ),
-			'connected_install_failed' => array( 'warning', __( 'The site is connected, but OpenStation could not be installed automatically. You can retry from its site card.', 'fleet-for-openstation' ) ),
-			'already_connected'      => array( 'info', __( 'This site is already connected. Fleet opened its workspace instead of creating another credential.', 'fleet-for-openstation' ) ),
-			'checked'                => array( 'success', __( 'Site status refreshed.', 'fleet-for-openstation' ) ),
-			'bulk_complete'          => array( 'success', __( 'The selected Fleet action completed.', 'fleet-for-openstation' ) ),
-			'bulk_partial'           => array( 'warning', __( 'The Fleet action completed with one or more site failures.', 'fleet-for-openstation' ) ),
-			'bulk_failed'            => array( 'error', __( 'Choose an action and at least one site.', 'fleet-for-openstation' ) ),
-			'installed'              => array( 'success', __( 'OpenStation installed and activated.', 'fleet-for-openstation' ) ),
-			'already_active'         => array( 'info', __( 'OpenStation is already active.', 'fleet-for-openstation' ) ),
-			'profile_updated'        => array( 'success', __( 'Agency details saved on this Fleet hub.', 'fleet-for-openstation' ) ),
-			'settings_updated'       => array( 'success', __( 'The remote site settings were saved.', 'fleet-for-openstation' ) ),
-			'content_updated'        => array( 'success', __( 'The remote content was updated.', 'fleet-for-openstation' ) ),
-			'plugin_updated'         => array( 'success', __( 'The remote plugin status was updated.', 'fleet-for-openstation' ) ),
-			'plugin_installed'       => array( 'success', __( 'The plugin was installed on the managed site.', 'fleet-for-openstation' ) ),
-			'comment_updated'        => array( 'success', __( 'The remote comment status was updated.', 'fleet-for-openstation' ) ),
-			'media_updated'          => array( 'success', __( 'The remote media details were saved.', 'fleet-for-openstation' ) ),
-			'media_uploaded'         => array( 'success', __( 'The file was uploaded to the remote Media Library.', 'fleet-for-openstation' ) ),
-			'user_created'           => array( 'success', __( 'The remote user was created.', 'fleet-for-openstation' ) ),
-			'user_updated'           => array( 'success', __( 'The remote user was updated.', 'fleet-for-openstation' ) ),
-			'api_complete'           => array( 'success', __( 'The remote API request completed.', 'fleet-for-openstation' ) ),
-			'disconnected'           => array( 'success', __( 'Remote authorization revoked and site disconnected.', 'fleet-for-openstation' ) ),
-			'invalid_url'            => array( 'error', __( 'Enter a valid public HTTPS WordPress site URL.', 'fleet-for-openstation' ) ),
-			'hub_https_required'     => array( 'error', __( 'The Fleet hub must use HTTPS for secure authorization.', 'fleet-for-openstation' ) ),
-			'self_site'              => array( 'warning', __( 'This site is the Fleet hub, so it cannot be connected to itself.', 'fleet-for-openstation' ) ),
-			'discovery_failed'       => array( 'error', __( 'Fleet could not find WordPress’s secure Application Password approval on that site.', 'fleet-for-openstation' ) ),
-			'authorization_failed'   => array( 'error', __( 'The authorization response was invalid.', 'fleet-for-openstation' ) ),
-			'authorization_expired'  => array( 'error', __( 'The authorization attempt expired. Try connecting again.', 'fleet-for-openstation' ) ),
-			'authorization_rejected' => array( 'warning', __( 'The site connection was not approved.', 'fleet-for-openstation' ) ),
-			'encryption_failed'      => array( 'error', __( 'This server could not securely store the credential.', 'fleet-for-openstation' ) ),
-			'credential_failed'      => array( 'error', __( 'WordPress issued a credential, but Fleet could not verify it. Check whether the server forwards Authorization headers.', 'fleet-for-openstation' ) ),
-			'check_failed'           => array( 'error', __( 'Fleet could not refresh that site.', 'fleet-for-openstation' ) ),
-			'install_failed'         => array( 'error', __( 'OpenStation could not be installed. Review the site error below.', 'fleet-for-openstation' ) ),
-			'settings_failed'        => array( 'error', __( 'Fleet could not save the remote site settings.', 'fleet-for-openstation' ) ),
-			'content_failed'         => array( 'error', __( 'Fleet could not update that remote content.', 'fleet-for-openstation' ) ),
-			'plugin_failed'          => array( 'error', __( 'Fleet could not update that remote plugin.', 'fleet-for-openstation' ) ),
-			'plugin_install_failed'  => array( 'error', __( 'Fleet could not install that WordPress.org plugin.', 'fleet-for-openstation' ) ),
-			'comment_failed'         => array( 'error', __( 'Fleet could not update that remote comment.', 'fleet-for-openstation' ) ),
-			'media_failed'           => array( 'error', __( 'Fleet could not update that remote media item.', 'fleet-for-openstation' ) ),
-			'media_upload_failed'    => array( 'error', __( 'Fleet could not upload that file. Check its type and the 10 MB limit.', 'fleet-for-openstation' ) ),
-			'user_failed'            => array( 'error', __( 'Fleet could not save that remote user.', 'fleet-for-openstation' ) ),
-			'api_failed'             => array( 'error', __( 'The remote API request failed.', 'fleet-for-openstation' ) ),
-			'disconnect_failed'      => array( 'error', __( 'Fleet could not revoke the remote authorization, so the site remains connected.', 'fleet-for-openstation' ) ),
-		);
-		if ( ! isset( $messages[ $code ] ) ) {
-			return;
-		}
-		?>
-		<div class="fleet-notice fleet-notice--<?php echo esc_attr( $messages[ $code ][0] ); ?>" role="status">
-			<span class="dashicons <?php echo 'success' === $messages[ $code ][0] ? 'dashicons-yes-alt' : 'dashicons-info-outline'; ?>" aria-hidden="true"></span>
-			<p><?php echo esc_html( $messages[ $code ][1] ); ?></p>
-		</div>
-		<?php
-	}
-
-	/**
-	 * Require capability and nonce for an admin action.
-	 *
-	 * @param string $nonce_action Nonce action.
-	 */
-	private static function guard_action( $nonce_action ) {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
-			wp_die( esc_html__( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
-		}
-		check_admin_referer( $nonce_action );
-	}
-
-	/**
-	 * Resolve the submitted site id.
-	 *
-	 * @return array Tuple of id, site, and all sites.
-	 */
-	private static function requested_site() {
-		$id    = sanitize_key( self::request_string( $_POST, 'site_id' ) );
-		$sites = self::get_sites();
-		if ( '' === $id || ! isset( $sites[ $id ] ) || ! is_array( $sites[ $id ] ) ) {
-			wp_die( esc_html__( 'That Fleet site does not exist.', 'fleet-for-openstation' ) );
-		}
-		return array( $id, $sites[ $id ], $sites );
-	}
-
 	/**
 	 * Get current user's connected sites.
 	 *
@@ -3227,17 +1881,80 @@ final class OpenStation_Fleet {
 	}
 
 	/**
-	 * Save current user's connected sites.
+	 * Merge one site record into the latest user metadata.
 	 *
-	 * @param array $sites Site records.
+	 * The compare-and-swap retry protects changes made in two independent Fleet
+	 * windows from replacing each other's site records after remote I/O.
+	 *
+	 * @param string $site_id Site id.
+	 * @param array  $site    Site record.
+	 * @param array  $replace_fields Local fields intentionally changed by this request.
+	 * @return bool Whether the record was persisted.
 	 */
-	private static function save_sites( $sites ) {
-		foreach ( $sites as $id => $site ) {
-			if ( is_array( $site ) ) {
-				$sites[ $id ] = self::normalize_site_record( $site );
+	private static function save_site( $site_id, $site, $replace_fields = array() ) {
+		$site_id = sanitize_key( $site_id );
+		$site    = self::normalize_site_record( $site );
+		$replace_fields = array_values( array_intersect( array( 'agency', 'name' ), array_map( 'sanitize_key', (array) $replace_fields ) ) );
+		return self::mutate_user_meta(
+			self::USER_META_SITES,
+			static function ( $sites ) use ( $site_id, $site, $replace_fields ) {
+				$sites             = is_array( $sites ) ? $sites : array();
+				$next              = $site;
+				if ( isset( $sites[ $site_id ] ) && is_array( $sites[ $site_id ] ) ) {
+					$current = self::normalize_site_record( $sites[ $site_id ] );
+					foreach ( array( 'agency', 'name' ) as $field ) {
+						if ( ! in_array( $field, $replace_fields, true ) ) {
+							$next[ $field ] = $current[ $field ];
+						}
+					}
+				}
+				$sites[ $site_id ] = $next;
+				return $sites;
+			}
+		);
+	}
+
+	/**
+	 * Remove one connected site without replacing concurrent sibling changes.
+	 *
+	 * @param string $site_id Site id.
+	 * @return bool Whether the record was removed.
+	 */
+	private static function remove_site( $site_id ) {
+		$site_id = sanitize_key( $site_id );
+		return self::mutate_user_meta(
+			self::USER_META_SITES,
+			static function ( $sites ) use ( $site_id ) {
+				$sites = is_array( $sites ) ? $sites : array();
+				unset( $sites[ $site_id ] );
+				return $sites;
+			}
+		);
+	}
+
+	/**
+	 * Compare and swap one per-user metadata value with bounded retries.
+	 *
+	 * @param string   $key     Metadata key.
+	 * @param callable $mutator Pure callback receiving the latest value.
+	 * @return bool Whether the mutation was persisted.
+	 */
+	private static function mutate_user_meta( $key, $mutator ) {
+		$user_id = get_current_user_id();
+		for ( $attempt = 0; $attempt < 5; ++$attempt ) {
+			$current = get_user_meta( $user_id, $key, true );
+			$next    = call_user_func( $mutator, $current );
+			if ( $next === $current ) {
+				return true;
+			}
+			if ( false !== update_user_meta( $user_id, $key, $next, $current ) ) {
+				return true;
+			}
+			if ( function_exists( 'wp_cache_delete' ) ) {
+				wp_cache_delete( $user_id, 'user_meta' );
 			}
 		}
-		update_user_meta( get_current_user_id(), self::USER_META_SITES, $sites );
+		return false;
 	}
 
 	/**
@@ -3251,9 +1968,11 @@ final class OpenStation_Fleet {
 			$site,
 			array(
 				'capabilities'      => array(),
+				'environment'       => array(),
 				'health'            => array(),
 				'health_checked'    => 0,
 				'inbox'             => self::empty_inbox_summary(),
+				'search_index'      => array(),
 				'wordpress_version' => '',
 				'agency'            => array(),
 				'setup_status'      => 'ready',
@@ -3272,6 +1991,18 @@ final class OpenStation_Fleet {
 		$site['agency']['tags']     = is_array( $site['agency']['tags'] ) ? array_values( array_filter( array_map( 'sanitize_text_field', $site['agency']['tags'] ) ) ) : array();
 		$site['agency']['favorite'] = ! empty( $site['agency']['favorite'] );
 		$site['inbox']              = self::normalize_inbox_summary( $site['inbox'] );
+		$site['search_index']       = is_array( $site['search_index'] ) ? array_slice( $site['search_index'], 0, 24 ) : array();
+		$site['environment']        = is_array( $site['environment'] ) ? array_intersect_key( $site['environment'], array_flip( array( 'environment', 'php_version', 'db_server_info', 'wp_version' ) ) ) : array();
+		$site['environment']        = array_map( 'sanitize_text_field', $site['environment'] );
+		if (
+			! empty( $site['site_url'] )
+			&& ! empty( $site['rest_url'] )
+			&& self::url_origin( $site['rest_url'] ) !== self::url_origin( $site['site_url'] )
+		) {
+			$site['rest_url'] = false !== strpos( (string) $site['rest_url'], 'rest_route=' )
+				? add_query_arg( 'rest_route', '/', trailingslashit( $site['site_url'] ) )
+				: trailingslashit( $site['site_url'] ) . 'wp-json/';
+		}
 		return $site;
 	}
 
@@ -3285,22 +2016,24 @@ final class OpenStation_Fleet {
 	 * @param string $status  success, warning, or error.
 	 */
 	private static function record_activity( $site_id, $site, $action, $message, $status = 'success' ) {
-		$events = get_user_meta( get_current_user_id(), self::USER_META_EVENTS, true );
-		$events = is_array( $events ) ? $events : array();
-		array_unshift(
-			$events,
-			array(
-				'id'        => wp_generate_uuid4(),
-				'time'      => time(),
-				'site_id'   => sanitize_key( $site_id ),
-				'site_name' => isset( $site['name'] ) ? sanitize_text_field( $site['name'] ) : '',
-				'action'    => sanitize_key( $action ),
-				'message'   => sanitize_text_field( $message ),
-				'status'    => in_array( $status, array( 'success', 'warning', 'error' ), true ) ? $status : 'success',
-				'actor'     => wp_get_current_user()->display_name,
-			)
+		$event = array(
+			'id'        => wp_generate_uuid4(),
+			'time'      => time(),
+			'site_id'   => sanitize_key( $site_id ),
+			'site_name' => isset( $site['name'] ) ? sanitize_text_field( $site['name'] ) : '',
+			'action'    => sanitize_key( $action ),
+			'message'   => sanitize_text_field( $message ),
+			'status'    => in_array( $status, array( 'success', 'warning', 'error' ), true ) ? $status : 'success',
+			'actor'     => wp_get_current_user()->display_name,
 		);
-		update_user_meta( get_current_user_id(), self::USER_META_EVENTS, array_slice( $events, 0, 100 ) );
+		self::mutate_user_meta(
+			self::USER_META_EVENTS,
+			static function ( $events ) use ( $event ) {
+				$events = is_array( $events ) ? $events : array();
+				array_unshift( $events, $event );
+				return array_slice( $events, 0, 100 );
+			}
+		);
 	}
 
 	/**
@@ -3312,64 +2045,6 @@ final class OpenStation_Fleet {
 		$events = get_user_meta( get_current_user_id(), self::USER_META_EVENTS, true );
 		return is_array( $events ) ? array_slice( $events, 0, 100 ) : array();
 	}
-
-	/**
-	 * Store one API console result for the redirect back to Fleet.
-	 *
-	 * @param string         $site_id Site id.
-	 * @param array|WP_Error $result  Remote result.
-	 * @param string         $method  HTTP method.
-	 * @param string         $route   REST route.
-	 * @return void
-	 */
-	private static function store_api_result( $site_id, $result, $method = '', $route = '' ) {
-		$data = is_wp_error( $result )
-			? array(
-				'error'   => $result->get_error_code(),
-				'message' => $result->get_error_message(),
-				'data'    => $result->get_error_data(),
-			)
-			: $result;
-		if ( strlen( (string) wp_json_encode( $data ) ) > 100000 ) {
-			$data = array(
-				'error'   => 'response_too_large',
-				'message' => __( 'The response exceeded Fleet’s 100 KB display limit.', 'fleet-for-openstation' ),
-			);
-		}
-		set_transient(
-			self::api_result_key( $site_id ),
-			array(
-				'method' => $method,
-				'route'  => $route,
-				'data'   => $data,
-			),
-			10 * MINUTE_IN_SECONDS
-		);
-	}
-
-	/**
-	 * Consume the latest API console result.
-	 *
-	 * @param string $site_id Site id.
-	 * @return array|null
-	 */
-	private static function take_api_result( $site_id ) {
-		$key    = self::api_result_key( $site_id );
-		$result = get_transient( $key );
-		delete_transient( $key );
-		return is_array( $result ) ? $result : null;
-	}
-
-	/**
-	 * Build a per-user transient key for API console output.
-	 *
-	 * @param string $site_id Site id.
-	 * @return string
-	 */
-	private static function api_result_key( $site_id ) {
-		return 'openstation_fleet_api_' . get_current_user_id() . '_' . sanitize_key( $site_id );
-	}
-
 	/**
 	 * Get a stable UUID used to identify this Fleet installation.
 	 *
@@ -3463,30 +2138,37 @@ final class OpenStation_Fleet {
 	}
 
 	/**
-	 * Redirect back to Fleet with a fixed notice code.
-	 *
-	 * @param string $notice Notice code.
+	 * Return from WordPress's external authorization screen to OpenStation.
 	 */
-	private static function redirect( $notice ) {
-		wp_safe_redirect( add_query_arg( 'fleet_notice', sanitize_key( $notice ), admin_url( 'admin.php?page=' . self::MENU_SLUG ) ) );
+	private static function return_to_openstation() {
+		$target = function_exists( 'openstation_shell_url' )
+			? openstation_shell_url()
+			: admin_url( 'plugins.php' );
+		wp_safe_redirect( $target );
 		exit;
 	}
 
 	/**
-	 * Redirect back to a selected site's remote workspace.
+	 * Stop a failed authorization with a fixed, non-secret Core error screen.
 	 *
-	 * @param string $notice  Notice code.
-	 * @param string $site_id Site id.
-	 * @param string $section Workspace section.
+	 * @param string $code Fixed error code.
 	 */
-	private static function redirect_workspace( $notice, $site_id, $section ) {
-		wp_safe_redirect(
-			add_query_arg(
-				'fleet_notice',
-				sanitize_key( $notice ),
-				self::workspace_url( $site_id, $section )
-			)
+	private static function fail_authorization( $code ) {
+		$messages = array(
+			'authorization_failed'   => __( 'The authorization response was invalid. Start the connection again from Fleet.', 'fleet-for-openstation' ),
+			'authorization_expired'  => __( 'The authorization attempt expired. Start the connection again from Fleet.', 'fleet-for-openstation' ),
+			'authorization_rejected' => __( 'The site connection was not approved.', 'fleet-for-openstation' ),
+			'encryption_failed'      => __( 'This server could not securely store the WordPress credential.', 'fleet-for-openstation' ),
+			'credential_failed'      => __( 'WordPress issued a credential, but Fleet could not verify it. Revoke the Fleet credential under Users → Profile → Application Passwords on the managed site, then check whether its server forwards Authorization headers.', 'fleet-for-openstation' ),
+			'administrator_required' => __( 'Fleet needs an administrator connection to manage the full WordPress site. The new credential was revoked; reconnect while signed in as an administrator.', 'fleet-for-openstation' ),
+			'storage_failed'         => __( 'Fleet could not save the connection, so it revoked the new WordPress credential. Start the connection again.', 'fleet-for-openstation' ),
 		);
-		exit;
+		$message = isset( $messages[ $code ] ) ? $messages[ $code ] : $messages['authorization_failed'];
+		$target  = function_exists( 'openstation_shell_url' ) ? openstation_shell_url() : admin_url( 'plugins.php' );
+		wp_die(
+			wp_kses_post( '<p>' . esc_html( $message ) . '</p><p><a class="button button-primary" href="' . esc_url( $target ) . '">' . esc_html__( 'Return to OpenStation', 'fleet-for-openstation' ) . '</a></p>' ),
+			esc_html__( 'Fleet could not connect the site', 'fleet-for-openstation' ),
+			array( 'response' => 400 )
+		);
 	}
 }

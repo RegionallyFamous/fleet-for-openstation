@@ -4,12 +4,15 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   plugin:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        php: ['7.4', '8.3']
+        php: ['7.4', '8.5']
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -17,7 +20,17 @@ jobs:
           php-version: ${{ matrix.php }}
       - run: ./bin/build.sh
       - uses: actions/upload-artifact@v4
-        if: matrix.php == '8.3'
+        if: matrix.php == '8.5'
         with:
           name: fleet-for-openstation
           path: dist/fleet-for-openstation.zip
+
+  plugin-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./bin/build.sh
+      - run: mkdir -p plugin-check-build && unzip -q dist/fleet-for-openstation.zip -d plugin-check-build
+      - uses: wordpress/plugin-check-action@v1
+        with:
+          build-dir: plugin-check-build/fleet-for-openstation

@@ -1,7 +1,7 @@
 <?php
 /**
- * Remove local Fleet metadata. Remote Application Passwords must be revoked
- * with the Disconnect action before uninstalling.
+ * Remove local Fleet metadata. Remote OAuth grants and bootstrap Application
+ * Passwords must be revoked with Disconnect before uninstalling.
  *
  * @package FleetForOpenStation
  */

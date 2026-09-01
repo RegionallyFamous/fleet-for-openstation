@@ -3,7 +3,7 @@ Contributors: openstation
 Tags: openstation, multisite, agency, site management
 Requires at least: 6.5
 Requires PHP: 7.4
-Stable tag: 0.5.0
+Stable tag: 0.5.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -40,6 +40,12 @@ Fleet Inbox combines pending comments, drafts, posts awaiting review, scheduled 
 8. The guided native WordPress connection flow.
 
 == Changelog ==
+
+= 0.5.1 =
+
+* Unify button, link-button, and connection-summary geometry across Fleet views.
+* Optically align button icons and remove conflicting control-height overrides.
+* Refresh the complete screenshot set against the verified OpenStation runtime.
 
 = 0.5.0 =
 

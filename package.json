@@ -1,0 +1,13 @@
+{
+  "name": "fleet-for-openstation-dev",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Development-only browser tests for Fleet for OpenStation.",
+  "scripts": {
+    "test:e2e": "./bin/test-e2e.sh"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.55.0"
+  }
+}

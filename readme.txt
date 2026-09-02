@@ -4,7 +4,7 @@ Tags: openstation, agency, site management, application passwords
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.7.0
+Stable tag: 0.8.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -18,7 +18,9 @@ Fleet gives that work one home. One OpenStation install becomes the hub for ever
 
 = The work comes to you =
 
-Fleet Inbox brings pending comments, drafts, posts awaiting review, scheduled work, connection problems, and useful Site Health findings into one queue. Fleet Search uses a secure local index refreshed during site checks, so a large fleet does not make you wait for one live request per site.
+Fleet Inbox brings pending comments, drafts, posts awaiting review, scheduled work, connection problems, and useful Site Health findings into one queue. Fleet Search uses a secure incremental index refreshed in short background passes, so a large fleet does not make you wait for one live request per site.
+
+Fast status checks stay frequent, heavier metadata and search work runs less often, and unavailable sites automatically back off until they recover.
 
 = Every site stays independent =
 
@@ -79,6 +81,15 @@ No. Fleet is a native App Framework application and intentionally has no classic
 8. Start a connection with only the managed site's HTTPS address—no Fleet plugin installation there.
 
 == Changelog ==
+
+= 0.8.0 =
+
+* Split fleet storage into independent per-site records with automatic migration from earlier versions.
+* Added time-budgeted background synchronization, separate refresh cadences, and bounded retry backoff.
+* Added incremental paginated search indexing with daily reconciliation and bounded storage.
+* Added short-lived read caching and duplicate-action protection while preserving independent site windows.
+* Hardened concurrent connection and search updates, multisite isolation, credential cleanup, and Explorer request validation.
+* Added reproducible release builds, version consistency checks, immutable CI actions, dependency updates, static analysis, compatibility checks, and an opt-in two-site browser and accessibility suite.
 
 = 0.7.0 =
 

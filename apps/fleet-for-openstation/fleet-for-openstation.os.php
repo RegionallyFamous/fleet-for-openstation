@@ -90,11 +90,11 @@ $openstation_fleet_app = App::define( 'fleet-for-openstation' )
 		)
 	);
 
-foreach ( array( 'connect', 'search', 'open-site', 'open-workspace', 'refresh-site', 'favorite', 'install', 'disconnect' ) as $action ) {
+foreach ( array( 'connect', 'search', 'open-site', 'open-workspace', 'refresh-site', 'favorite', 'install', 'disconnect' ) as $openstation_fleet_action ) {
 	$openstation_fleet_app->action(
-		$action,
-		static function ( State $state, Os $os, array $args ) use ( $action ) {
-			OpenStation_Fleet_App::hub_action( $action, $state, $os, $args );
+		$openstation_fleet_action,
+		static function ( State $state, Os $os, array $args ) use ( $openstation_fleet_action ) {
+			OpenStation_Fleet_App::hub_action( $openstation_fleet_action, $state, $os, $args );
 		}
 	);
 }

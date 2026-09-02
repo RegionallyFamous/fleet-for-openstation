@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<ruleset name="Fleet for OpenStation">
+	<description>WordPress coding standards and PHP 7.4+ compatibility for production PHP.</description>
+
+	<file>fleet-for-openstation.php</file>
+	<file>includes</file>
+	<file>apps</file>
+	<file>uninstall.php</file>
+
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/dist/*</exclude-pattern>
+
+	<arg name="basepath" value="."/>
+	<arg name="colors"/>
+	<arg value="s"/>
+	<arg name="extensions" value="php"/>
+	<arg name="parallel" value="8"/>
+
+	<config name="minimum_supported_wp_version" value="6.5"/>
+	<config name="testVersion" value="7.4-"/>
+
+	<rule ref="WordPress"/>
+	<!-- OpenStation discovers app manifests by their required .os.php suffix. -->
+	<rule ref="WordPress.Files.FileName.NotHyphenatedLowercase">
+		<exclude-pattern>*/apps/*/*.os.php</exclude-pattern>
+	</rule>
+	<rule ref="PHPCompatibilityWP"/>
+</ruleset>

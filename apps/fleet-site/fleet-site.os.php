@@ -84,21 +84,75 @@ $openstation_fleet_site_app = App::define( 'fleet-site' )
 		)
 	)
 	->view( $openstation_fleet_site_view( 'overview' ) )
-	->tab( 'content', array( 'label' => __( 'Content', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'content' ) ) )
-	->tab( 'media', array( 'label' => __( 'Media', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'media' ) ) )
-	->tab( 'comments', array( 'label' => __( 'Comments', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'comments' ) ) )
-	->tab( 'design', array( 'label' => __( 'Design', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'design' ) ) )
-	->tab( 'plugins', array( 'label' => __( 'Plugins', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'plugins' ) ) )
-	->tab( 'users', array( 'label' => __( 'Users', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'users' ) ) )
-	->tab( 'settings', array( 'label' => __( 'Settings', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'settings' ) ) )
-	->tab( 'agency', array( 'label' => __( 'Agency', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'agency' ) ) )
-	->tab( 'api', array( 'label' => __( 'Explorer', 'fleet-for-openstation' ), 'view' => $openstation_fleet_site_view( 'api' ) ) );
+	->tab(
+		'content',
+		array(
+			'label' => __( 'Content', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'content' ),
+		)
+	)
+	->tab(
+		'media',
+		array(
+			'label' => __( 'Media', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'media' ),
+		)
+	)
+	->tab(
+		'comments',
+		array(
+			'label' => __( 'Comments', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'comments' ),
+		)
+	)
+	->tab(
+		'design',
+		array(
+			'label' => __( 'Design', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'design' ),
+		)
+	)
+	->tab(
+		'plugins',
+		array(
+			'label' => __( 'Plugins', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'plugins' ),
+		)
+	)
+	->tab(
+		'users',
+		array(
+			'label' => __( 'Users', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'users' ),
+		)
+	)
+	->tab(
+		'settings',
+		array(
+			'label' => __( 'Settings', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'settings' ),
+		)
+	)
+	->tab(
+		'agency',
+		array(
+			'label' => __( 'Agency', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'agency' ),
+		)
+	)
+	->tab(
+		'api',
+		array(
+			'label' => __( 'Explorer', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'api' ),
+		)
+	);
 
-foreach ( array( 'open-hub', 'open-site-url', 'refresh', 'finish-setup', 'install-openstation', 'save-content', 'save-comment', 'save-media', 'save-settings', 'save-agency', 'change-plugin', 'install-plugin', 'create-user', 'save-user', 'api-request', 'disconnect' ) as $action ) {
+foreach ( array( 'open-hub', 'open-site-url', 'refresh', 'finish-setup', 'install-openstation', 'save-content', 'save-comment', 'save-media', 'save-settings', 'save-agency', 'change-plugin', 'install-plugin', 'create-user', 'save-user', 'api-request', 'disconnect' ) as $openstation_fleet_site_action ) {
 	$openstation_fleet_site_app->action(
-		$action,
-		static function ( State $state, Os $os, array $args ) use ( $action ) {
-			OpenStation_Fleet_App::site_action( $action, $state, $os, $args );
+		$openstation_fleet_site_action,
+		static function ( State $state, Os $os, array $args ) use ( $openstation_fleet_site_action ) {
+			OpenStation_Fleet_App::site_action( $openstation_fleet_site_action, $state, $os, $args );
 		}
 	);
 }

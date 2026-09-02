@@ -1,0 +1,20 @@
+includes:
+    - vendor/szepeviktor/phpstan-wordpress/extension.neon
+
+parameters:
+    level: 5
+    phpVersion: 70400
+    paths:
+        - fleet-for-openstation.php
+        - includes
+        - apps
+        - uninstall.php
+    bootstrapFiles:
+        - tests/quality/openstation-global-stubs.php
+        - tests/quality/openstation-stubs.php
+    excludePaths:
+        analyse:
+            - vendor
+            - dist
+    reportUnmatchedIgnoredErrors: true
+    treatPhpDocTypesAsCertain: false

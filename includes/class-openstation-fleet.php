@@ -7,24 +7,24 @@
 
 defined( 'ABSPATH' ) || exit;
 
+require_once __DIR__ . '/class-openstation-fleet-crypto.php';
+require_once __DIR__ . '/class-openstation-fleet-repository.php';
+require_once __DIR__ . '/class-openstation-fleet-rest-client.php';
+require_once __DIR__ . '/class-openstation-fleet-search-index.php';
+require_once __DIR__ . '/class-openstation-fleet-sync-policy.php';
+
 /**
  * Implements the experimental Fleet feature with WordPress Core primitives.
  */
 final class OpenStation_Fleet {
-	const CAPABILITY       = 'manage_options';
-	const USER_META_SITES  = 'openstation_fleet_sites';
-	const USER_META_EVENTS = 'openstation_fleet_activity';
-	const USER_META_APP_ID = 'openstation_fleet_app_id';
-	const PLUGIN_SLUG      = 'desktop-mode';
-	const PLUGIN_REST_ID   = 'desktop-mode/desktop-mode';
-	const CRON_HOOK        = 'openstation_fleet_scheduled_check';
-	const CRON_SCHEDULE    = 'openstation_fleet_15_minutes';
-	const CRON_LOCK        = 'openstation_fleet_scheduled_check_lock';
-	const CRON_CURSOR      = 'openstation_fleet_scheduled_check_cursor';
-	const CRON_BATCH_SIZE  = 2;
-	const REQUEST_TIMEOUT  = 12;
-	const RESPONSE_LIMIT   = 2_097_152;
-	const DISCOVERY_LIMIT  = 4_194_304;
+	const CAPABILITY             = 'manage_options';
+	const PLUGIN_SLUG            = 'desktop-mode';
+	const PLUGIN_REST_ID         = 'desktop-mode/desktop-mode';
+	const CRON_HOOK              = 'openstation_fleet_scheduled_check';
+	const CRON_SCHEDULE          = 'openstation_fleet_five_minutes';
+	const PREVIOUS_CRON_SCHEDULE = 'openstation_fleet_15_minutes';
+	const CRON_CURSOR            = 'openstation_fleet_scheduled_check_cursor';
+	const DISCOVERY_LIMIT        = 4_194_304;
 
 	/**
 	 * Register Fleet's native apps, authorization callback, and scheduled checks.
@@ -35,6 +35,7 @@ final class OpenStation_Fleet {
 		add_filter( 'openstation_app_window_args', array( __CLASS__, 'add_app_assets' ), 10, 3 );
 		add_action( 'admin_notices', array( __CLASS__, 'render_dependency_notice' ) );
 		add_action( 'network_admin_notices', array( __CLASS__, 'render_dependency_notice' ) );
+		// phpcs:ignore WordPress.WP.CronInterval.CronSchedulesInterval -- Lightweight status synchronization is deliberately time-budgeted at five minutes.
 		add_filter( 'cron_schedules', array( __CLASS__, 'cron_schedules' ) );
 		add_filter( 'wp_privacy_personal_data_exporters', array( __CLASS__, 'register_privacy_exporter' ) );
 		add_filter( 'wp_privacy_personal_data_erasers', array( __CLASS__, 'register_privacy_eraser' ) );
@@ -42,7 +43,15 @@ final class OpenStation_Fleet {
 		add_action( self::CRON_HOOK, array( __CLASS__, 'run_scheduled_checks' ) );
 		add_action( 'admin_post_openstation_fleet_authorized', array( __CLASS__, 'handle_authorized' ) );
 
-		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
+		$next = wp_next_scheduled( self::CRON_HOOK );
+		if ( $next ) {
+			$event = wp_get_scheduled_event( self::CRON_HOOK );
+			if ( $event && self::PREVIOUS_CRON_SCHEDULE === $event->schedule ) {
+				wp_unschedule_event( $event->timestamp, self::CRON_HOOK, isset( $event->args ) ? $event->args : array() );
+				$next = false;
+			}
+		}
+		if ( ! $next ) {
 			wp_schedule_event( time() + ( 5 * MINUTE_IN_SECONDS ), self::CRON_SCHEDULE, self::CRON_HOOK );
 		}
 	}
@@ -66,7 +75,18 @@ final class OpenStation_Fleet {
 				return false;
 			}
 		}
-		return function_exists( 'openstation_apps_registry' ) && function_exists( 'openstation_apps_runtime' );
+		foreach ( array( 'param', 'title', 'badge', 'toast', 'open', 'open_url', 'close' ) as $method ) {
+			if ( ! method_exists( '\\OpenStation\\App\\Os', $method ) ) {
+				return false;
+			}
+		}
+		if ( ! class_exists( '\\OpenStation\\App\\Effects' ) || ! property_exists( '\\OpenStation\\App\\Os', 'effects' ) || ! in_array( 'add', get_class_methods( '\\OpenStation\\App\\Effects' ), true ) ) {
+			return false;
+		}
+		return function_exists( 'openstation_apps_registry' )
+			&& function_exists( 'openstation_apps_runtime' )
+			&& function_exists( '\\OpenStation\\App\\Html\\esc' )
+			&& function_exists( '\\OpenStation\\App\\Html\\json' );
 	}
 
 	/**
@@ -151,7 +171,6 @@ final class OpenStation_Fleet {
 	 */
 	public static function deactivate() {
 		wp_clear_scheduled_hook( self::CRON_HOOK );
-		delete_option( self::CRON_LOCK );
 		delete_option( self::CRON_CURSOR );
 	}
 
@@ -187,9 +206,6 @@ final class OpenStation_Fleet {
 	 * Suggest an accurate Fleet paragraph for the site's privacy policy.
 	 */
 	public static function add_privacy_policy_content() {
-		if ( ! function_exists( 'wp_add_privacy_policy_content' ) ) {
-			return;
-		}
 		wp_add_privacy_policy_content(
 			__( 'Fleet for OpenStation', 'fleet-for-openstation' ),
 			wp_kses_post( __( 'Fleet stores each administrator’s connected-site URLs, remote usernames, encrypted Application Password credentials, client labels, private notes, and recent Fleet activity in that administrator’s user metadata. It sends authenticated requests only to sites that administrator connects. Fleet includes no telemetry or third-party tracking. Disconnect a site before removing Fleet to revoke its remote credential.', 'fleet-for-openstation' ) )
@@ -205,12 +221,15 @@ final class OpenStation_Fleet {
 	public static function export_personal_data( $email_address ) {
 		$user = get_user_by( 'email', $email_address );
 		if ( ! $user ) {
-			return array( 'data' => array(), 'done' => true );
+			return array(
+				'data' => array(),
+				'done' => true,
+			);
 		}
 
 		$data  = array();
-		$sites = get_user_meta( $user->ID, self::USER_META_SITES, true );
-		foreach ( is_array( $sites ) ? $sites : array() as $site_id => $site ) {
+		$sites = OpenStation_Fleet_Repository::all( $user->ID, array( __CLASS__, 'normalize_site_record' ) );
+		foreach ( $sites as $site_id => $site ) {
 			$site   = self::normalize_site_record( is_array( $site ) ? $site : array() );
 			$agency = $site['agency'];
 			$data[] = array(
@@ -218,15 +237,33 @@ final class OpenStation_Fleet {
 				'group_label' => __( 'Fleet connected sites', 'fleet-for-openstation' ),
 				'item_id'     => 'fleet-site-' . sanitize_key( $site_id ),
 				'data'        => array(
-					array( 'name' => __( 'Site URL', 'fleet-for-openstation' ), 'value' => esc_url_raw( isset( $site['site_url'] ) ? $site['site_url'] : '' ) ),
-					array( 'name' => __( 'Remote username', 'fleet-for-openstation' ), 'value' => sanitize_user( isset( $site['user_login'] ) ? $site['user_login'] : '', true ) ),
-					array( 'name' => __( 'Client', 'fleet-for-openstation' ), 'value' => sanitize_text_field( $agency['client_name'] ) ),
-					array( 'name' => __( 'Tags', 'fleet-for-openstation' ), 'value' => implode( ', ', array_map( 'sanitize_text_field', $agency['tags'] ) ) ),
-					array( 'name' => __( 'Private notes', 'fleet-for-openstation' ), 'value' => sanitize_textarea_field( $agency['notes'] ) ),
+					array(
+						'name'  => __( 'Site URL', 'fleet-for-openstation' ),
+						'value' => esc_url_raw( isset( $site['site_url'] ) ? $site['site_url'] : '' ),
+					),
+					array(
+						'name'  => __( 'Remote username', 'fleet-for-openstation' ),
+						'value' => sanitize_user( isset( $site['user_login'] ) ? $site['user_login'] : '', true ),
+					),
+					array(
+						'name'  => __( 'Client', 'fleet-for-openstation' ),
+						'value' => sanitize_text_field( $agency['client_name'] ),
+					),
+					array(
+						'name'  => __( 'Tags', 'fleet-for-openstation' ),
+						'value' => implode( ', ', array_map( 'sanitize_text_field', $agency['tags'] ) ),
+					),
+					array(
+						'name'  => __( 'Private notes', 'fleet-for-openstation' ),
+						'value' => sanitize_textarea_field( $agency['notes'] ),
+					),
 				),
 			);
 		}
-		return array( 'data' => $data, 'done' => true );
+		return array(
+			'data' => $data,
+			'done' => true,
+		);
 	}
 
 	/**
@@ -238,9 +275,14 @@ final class OpenStation_Fleet {
 	public static function erase_personal_data( $email_address ) {
 		$user = get_user_by( 'email', $email_address );
 		if ( ! $user ) {
-			return array( 'items_removed' => false, 'items_retained' => false, 'messages' => array(), 'done' => true );
+			return array(
+				'items_removed'  => false,
+				'items_retained' => false,
+				'messages'       => array(),
+				'done'           => true,
+			);
 		}
-		$sites = get_user_meta( $user->ID, self::USER_META_SITES, true );
+		$sites = OpenStation_Fleet_Repository::all( $user->ID, array( __CLASS__, 'normalize_site_record' ) );
 		if ( is_array( $sites ) && ! empty( $sites ) ) {
 			return array(
 				'items_removed'  => false,
@@ -249,57 +291,22 @@ final class OpenStation_Fleet {
 				'done'           => true,
 			);
 		}
-		delete_user_meta( $user->ID, self::USER_META_EVENTS );
-		delete_user_meta( $user->ID, self::USER_META_APP_ID );
-		delete_user_meta( $user->ID, self::USER_META_SITES );
-		return array( 'items_removed' => true, 'items_retained' => false, 'messages' => array(), 'done' => true );
-	}
-
-	/**
-	 * Normalize heterogeneous Core search collections for the hub UI.
-	 *
-	 * @param array $results Named Core REST collection results.
-	 * @return array
-	 */
-	private static function normalize_search_results( $results ) {
-		$items = array();
-		$seen  = array();
-		foreach ( isset( $results['content'] ) && is_array( $results['content'] ) ? $results['content'] : array() as $item ) {
-			$subtype = isset( $item['subtype'] ) ? sanitize_key( $item['subtype'] ) : 'content';
-			$key_type = 'attachment' === $subtype ? 'media' : $subtype;
-			$key     = $key_type . ':' . ( isset( $item['id'] ) ? (string) $item['id'] : md5( wp_json_encode( $item ) ) );
-			$seen[ $key ] = true;
-			$items[]      = array( 'title' => isset( $item['title'] ) ? sanitize_text_field( wp_strip_all_tags( $item['title'] ) ) : __( '(Untitled)', 'fleet-for-openstation' ), 'meta' => ucfirst( $subtype ), 'section' => 'attachment' === $subtype ? 'media' : 'content', 'icon' => 'attachment' === $subtype ? 'dashicons-format-image' : ( 'page' === $subtype ? 'dashicons-admin-page' : 'dashicons-admin-post' ) );
+		delete_user_meta( $user->ID, OpenStation_Fleet_Repository::activity_meta_key() );
+		delete_user_meta( $user->ID, OpenStation_Fleet_Repository::app_id_meta_key() );
+		if ( ! OpenStation_Fleet_Repository::delete_all( $user->ID ) ) {
+			return array(
+				'items_removed'  => false,
+				'items_retained' => true,
+				'messages'       => array( __( 'Fleet data changed while WordPress was erasing it. Try the erasure again.', 'fleet-for-openstation' ) ),
+				'done'           => true,
+			);
 		}
-		foreach ( array( 'posts' => 'post', 'pages' => 'page' ) as $collection => $type ) {
-			foreach ( isset( $results[ $collection ] ) && is_array( $results[ $collection ] ) ? $results[ $collection ] : array() as $item ) {
-				$key = $type . ':' . ( isset( $item['id'] ) ? (string) $item['id'] : md5( wp_json_encode( $item ) ) );
-				if ( isset( $seen[ $key ] ) ) {
-					continue;
-				}
-				$seen[ $key ] = true;
-				$title        = ! empty( $item['title']['rendered'] ) ? sanitize_text_field( wp_strip_all_tags( $item['title']['rendered'] ) ) : __( '(Untitled)', 'fleet-for-openstation' );
-				$status       = isset( $item['status'] ) ? sanitize_key( $item['status'] ) : $type;
-				$items[]      = array( 'title' => $title, 'meta' => ucfirst( $type ) . ' · ' . ucfirst( $status ), 'section' => 'content', 'icon' => 'page' === $type ? 'dashicons-admin-page' : 'dashicons-admin-post' );
-			}
-		}
-		foreach ( isset( $results['users'] ) && is_array( $results['users'] ) ? $results['users'] : array() as $item ) {
-			$roles   = isset( $item['roles'] ) && is_array( $item['roles'] ) ? implode( ', ', array_map( 'sanitize_key', $item['roles'] ) ) : __( 'WordPress user', 'fleet-for-openstation' );
-			$items[] = array( 'title' => isset( $item['name'] ) ? sanitize_text_field( $item['name'] ) : __( 'User', 'fleet-for-openstation' ), 'meta' => $roles, 'section' => 'users', 'icon' => 'dashicons-admin-users' );
-		}
-		foreach ( isset( $results['comments'] ) && is_array( $results['comments'] ) ? $results['comments'] : array() as $item ) {
-			$content = ! empty( $item['content']['rendered'] ) ? sanitize_text_field( wp_strip_all_tags( $item['content']['rendered'] ) ) : __( 'Comment', 'fleet-for-openstation' );
-			$items[] = array( 'title' => isset( $item['author_name'] ) ? sanitize_text_field( $item['author_name'] ) : __( 'Comment', 'fleet-for-openstation' ), 'meta' => $content, 'section' => 'comments', 'icon' => 'dashicons-admin-comments' );
-		}
-		foreach ( isset( $results['media'] ) && is_array( $results['media'] ) ? $results['media'] : array() as $item ) {
-			$key = 'media:' . ( isset( $item['id'] ) ? (string) $item['id'] : md5( wp_json_encode( $item ) ) );
-			if ( isset( $seen[ $key ] ) ) {
-				continue;
-			}
-			$seen[ $key ] = true;
-			$items[] = array( 'title' => ! empty( $item['title']['rendered'] ) ? sanitize_text_field( wp_strip_all_tags( $item['title']['rendered'] ) ) : __( '(Untitled media)', 'fleet-for-openstation' ), 'meta' => isset( $item['mime_type'] ) ? sanitize_text_field( $item['mime_type'] ) : __( 'Media', 'fleet-for-openstation' ), 'section' => 'media', 'icon' => 'dashicons-format-image' );
-		}
-		return array_slice( $items, 0, 24 );
+		return array(
+			'items_removed'  => true,
+			'items_retained' => false,
+			'messages'       => array(),
+			'done'           => true,
+		);
 	}
 
 	/**
@@ -308,37 +315,75 @@ final class OpenStation_Fleet {
 	 * Fleet searches this cached index instead of opening a synchronous HTTP
 	 * request to every connected site while the user waits.
 	 *
-	 * @param array $site Connected site record.
-	 * @return array Normalized search records.
+	 * @param array      $site     Connected site record.
+	 * @param array      $search   Separately persisted search payload.
+	 * @param int        $budget   Maximum Core collection pages to fetch.
+	 * @param float|null $deadline Optional wall-clock deadline.
+	 * @return array Incremental index state envelope.
 	 */
-	private static function fetch_search_index( $site ) {
-		$paths = array();
-		if ( self::supports( $site, 'search' ) ) {
-			$paths['content'] = 'wp/v2/search?context=edit&per_page=100&_fields=id,title,type,subtype';
-		}
-		if ( self::supports( $site, 'posts' ) ) {
-			$paths['posts'] = 'wp/v2/posts?context=edit&status=any&per_page=100&_fields=id,title,status,type';
-		}
-		if ( self::supports( $site, 'pages' ) ) {
-			$paths['pages'] = 'wp/v2/pages?context=edit&status=any&per_page=100&_fields=id,title,status,type';
-		}
-		if ( self::supports( $site, 'users' ) ) {
-			$paths['users'] = 'wp/v2/users?context=edit&per_page=100&_fields=id,name,roles';
-		}
-		if ( self::supports( $site, 'comments' ) ) {
-			$paths['comments'] = 'wp/v2/comments?context=edit&status=all&per_page=50&_fields=id,author_name,content,status';
-		}
-		if ( empty( $paths ) ) {
-			return array();
-		}
-
-		$results = self::remote_get_map( $site, $paths );
-		foreach ( $results as $key => $result ) {
-			if ( is_wp_error( $result ) ) {
-				$results[ $key ] = array();
+	private static function fetch_search_index( $site, $search, $budget = 1, $deadline = null ) {
+		$collections = array();
+		foreach ( array( 'posts', 'pages', 'users', 'comments', 'media' ) as $collection ) {
+			if ( self::supports( $site, $collection ) ) {
+				$collections[] = $collection;
 			}
 		}
-		return self::normalize_search_results( $results );
+		if ( empty( $collections ) ) {
+			return array( 'state' => array() );
+		}
+
+		$index = new OpenStation_Fleet_Search_Index(
+			array(
+				'collections' => $collections,
+				'per_page'    => 50,
+				'max_items'   => 750,
+			)
+		);
+		$state = isset( $search['search_index_state'] ) && is_array( $search['search_index_state'] ) ? $search['search_index_state'] : $index->initial_state();
+		$state = $index->advance(
+			$state,
+			static function ( $request ) use ( $site, $deadline ) {
+				$collection = sanitize_key( isset( $request['collection'] ) ? $request['collection'] : '' );
+				$fields     = array(
+					'posts'    => 'id,title,status,modified_gmt,date_gmt,type',
+					'pages'    => 'id,title,status,modified_gmt,date_gmt,type',
+					'users'    => 'id,name,roles',
+					'comments' => 'id,author_name,content,status,date_gmt',
+					'media'    => 'id,title,mime_type,modified_gmt,date_gmt',
+				);
+				if ( ! isset( $fields[ $collection ] ) ) {
+					return array( 'error' => __( 'Unsupported search collection.', 'fleet-for-openstation' ) );
+				}
+				$query = array(
+					'context'  => 'edit',
+					'page'     => max( 1, (int) $request['page'] ),
+					'per_page' => max( 1, min( 100, (int) $request['per_page'] ) ),
+					'_fields'  => $fields[ $collection ],
+				);
+				if ( in_array( $collection, array( 'posts', 'pages' ), true ) ) {
+					$query['status']  = 'any';
+					$query['orderby'] = 'modified';
+					$query['order']   = 'desc';
+				} elseif ( 'comments' === $collection ) {
+					$query['status'] = 'all';
+				}
+				if ( ! empty( $request['after'] ) && in_array( $collection, array( 'posts', 'pages', 'media' ), true ) ) {
+					$query['modified_after'] = sanitize_text_field( $request['after'] );
+				} elseif ( ! empty( $request['after'] ) && 'comments' === $collection ) {
+					$query['after'] = sanitize_text_field( $request['after'] );
+				}
+				$timeout = self::request_timeout( $deadline );
+				if ( false === $timeout ) {
+					return array( 'error' => __( 'The Fleet synchronization time budget was reached.', 'fleet-for-openstation' ) );
+				}
+				$copy   = $site;
+				$result = OpenStation_Fleet_REST_Client::request_envelope( $copy, 'GET', 'wp/v2/' . $collection . '?' . http_build_query( $query, '', '&' ), null, $timeout );
+				return is_wp_error( $result ) ? array( 'error' => $result->get_error_message() ) : $result;
+			},
+			time(),
+			max( 1, min( 5, (int) $budget ) )
+		);
+		return array( 'state' => $state );
 	}
 
 	/**
@@ -378,7 +423,7 @@ final class OpenStation_Fleet {
 			self::fail_authorization( 'authorization_failed' );
 		}
 
-		$sealed = self::seal_secret( $password );
+		$sealed   = OpenStation_Fleet_Crypto::seal( $password );
 		$password = null;
 		if ( is_wp_error( $sealed ) ) {
 			self::fail_authorization( 'encryption_failed' );
@@ -401,28 +446,38 @@ final class OpenStation_Fleet {
 		if ( is_wp_error( $credential ) || empty( $credential['uuid'] ) ) {
 			self::fail_authorization( 'credential_failed' );
 		}
-		$site['credential_uuid'] = sanitize_text_field( $credential['uuid'] );
-		$account = self::remote_request( $site, 'GET', 'wp/v2/users/me?context=edit&_fields=id,name,roles,capabilities' );
+		$site['credential_uuid']       = sanitize_text_field( $credential['uuid'] );
+		$site['connection_generation'] = $site['credential_uuid'];
+		$account                       = self::remote_request( $site, 'GET', 'wp/v2/users/me?context=edit&_fields=id,name,roles,capabilities' );
 		if ( is_wp_error( $account ) || empty( $account['capabilities']['manage_options'] ) ) {
-			self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . rawurlencode( $site['credential_uuid'] ) );
-			self::fail_authorization( 'administrator_required' );
+			self::fail_authorization( self::revoke_new_credential( $site ) ? 'administrator_required' : 'administrator_revoke_failed' );
 		}
 		$site_id = self::site_id( $returned_url );
-		if ( isset( self::get_sites()[ $site_id ] ) ) {
-			self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . rawurlencode( $site['credential_uuid'] ) );
+		if ( false !== self::get_site( $site_id ) ) {
+			if ( ! self::revoke_new_credential( $site ) ) {
+				self::fail_authorization( 'duplicate_revoke_failed' );
+			}
 			self::return_to_openstation();
 		}
-		$install = self::install_openstation( $site );
+		$search_state = null;
+		$install      = self::install_openstation( $site );
 		if ( is_wp_error( $install ) ) {
 			$site['setup_status'] = 'error';
 		} else {
-			$site                 = self::refresh_site( $site );
+			$site                 = self::refresh_site( $site, true, null, $search_state );
 			$site['setup_status'] = empty( $site['error'] ) ? 'ready' : 'error';
 		}
 
-		if ( ! self::save_site( $site_id, $site ) ) {
-			self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . rawurlencode( $site['credential_uuid'] ) );
-			self::fail_authorization( 'storage_failed' );
+		$connection_saved = self::save_site( $site_id, $site, array(), true );
+		$saved            = $connection_saved;
+		if ( $saved && is_array( $search_state ) ) {
+			$saved = self::save_site_search( $site_id, $site, $search_state );
+		}
+		if ( ! $saved ) {
+			if ( $connection_saved ) {
+				self::remove_site( $site_id, $site['connection_generation'] );
+			}
+			self::fail_authorization( self::revoke_new_credential( $site ) ? 'storage_failed' : 'storage_revoke_failed' );
 		}
 		self::record_activity( $site_id, $site, 'connected', __( 'Site connected with WordPress Core.', 'fleet-for-openstation' ) );
 		if ( is_wp_error( $install ) || ! empty( $site['error'] ) ) {
@@ -432,6 +487,21 @@ final class OpenStation_Fleet {
 		}
 		self::return_to_openstation();
 	}
+
+	/**
+	 * Revoke the just-issued remote credential and confirm the REST result.
+	 *
+	 * @param array $site Connected site record.
+	 * @return bool Whether WordPress confirmed revocation.
+	 */
+	private static function revoke_new_credential( $site ) {
+		if ( empty( $site['credential_uuid'] ) ) {
+			return false;
+		}
+		$result = self::remote_request( $site, 'DELETE', 'wp/v2/users/me/application-passwords/' . rawurlencode( $site['credential_uuid'] ) );
+		return ! is_wp_error( $result );
+	}
+
 	/**
 	 * Install or activate OpenStation without redirecting.
 	 *
@@ -440,7 +510,7 @@ final class OpenStation_Fleet {
 	 */
 	private static function install_openstation( &$site ) {
 		$site['last_checked'] = time();
-		$plugins = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' );
+		$plugins              = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' );
 		if ( is_wp_error( $plugins ) ) {
 			$site['error'] = $plugins->get_error_message();
 			return $plugins;
@@ -452,7 +522,15 @@ final class OpenStation_Fleet {
 			return 'active';
 		}
 		$result = 'missing' === $status['status']
-			? self::remote_request( $site, 'POST', 'wp/v2/plugins', array( 'slug' => self::PLUGIN_SLUG, 'status' => 'active' ) )
+			? self::remote_request(
+				$site,
+				'POST',
+				'wp/v2/plugins',
+				array(
+					'slug'   => self::PLUGIN_SLUG,
+					'status' => 'active',
+				)
+			)
 			: self::remote_request( $site, 'POST', 'wp/v2/plugins/' . self::PLUGIN_REST_ID, array( 'status' => 'active' ) );
 		if ( is_wp_error( $result ) ) {
 			$site['error'] = $result->get_error_message();
@@ -488,6 +566,15 @@ final class OpenStation_Fleet {
 		) {
 			return false;
 		}
+		$query = array();
+		if ( false !== strpos( $route, '?' ) ) {
+			wp_parse_str( (string) wp_parse_url( $route, PHP_URL_QUERY ), $query );
+			foreach ( array_keys( $query ) as $query_key ) {
+				if ( '_method' === strtolower( (string) $query_key ) ) {
+					return false;
+				}
+			}
+		}
 
 		$path = rawurldecode( explode( '?', ltrim( $route, '/' ), 2 )[0] );
 		if ( false !== strpos( $path, '\\' ) ) {
@@ -509,29 +596,33 @@ final class OpenStation_Fleet {
 	 * @return array
 	 */
 	public static function app_hub_data( $view = 'sites', $query = '' ) {
-		$view  = in_array( $view, array( 'sites', 'inbox', 'search', 'workspaces', 'activity' ), true ) ? $view : 'sites';
-		$query = sanitize_text_field( (string) $query );
-		$sites = self::get_sites();
-		$model = array(
+		$view     = in_array( $view, array( 'sites', 'inbox', 'search', 'workspaces', 'activity' ), true ) ? $view : 'sites';
+		$query    = sanitize_text_field( (string) $query );
+		$site_ids = self::get_site_ids();
+		$model    = array(
 			'sites'      => array(),
 			'activity'   => 'activity' === $view ? self::get_activity() : array(),
 			'workspaces' => array(),
 			'search'     => array(),
 			'counts'     => array(
-				'sites'     => count( $sites ),
+				'sites'     => count( $site_ids ),
 				'healthy'   => 0,
 				'attention' => 0,
 				'inbox'     => 0,
 			),
 		);
 
-		foreach ( $sites as $id => $site ) {
-			$attention = self::attention_reasons( $site );
-			$inbox     = self::inbox_item_count( $site );
-			$status    = isset( $site['openstation']['status'] ) ? sanitize_key( $site['openstation']['status'] ) : 'unknown';
-			$agency    = isset( $site['agency'] ) && is_array( $site['agency'] ) ? $site['agency'] : array();
-			$client    = ! empty( $agency['client_name'] ) ? sanitize_text_field( $agency['client_name'] ) : __( 'Unassigned sites', 'fleet-for-openstation' );
-			$item      = array(
+		foreach ( $site_ids as $id ) {
+			$site = self::get_site( $id );
+			if ( ! is_array( $site ) ) {
+				continue;
+			}
+			$attention        = self::attention_reasons( $site );
+			$inbox            = self::inbox_item_count( $site );
+			$status           = isset( $site['openstation']['status'] ) ? sanitize_key( $site['openstation']['status'] ) : 'unknown';
+			$agency           = isset( $site['agency'] ) && is_array( $site['agency'] ) ? $site['agency'] : array();
+			$client           = ! empty( $agency['client_name'] ) ? sanitize_text_field( $agency['client_name'] ) : __( 'Unassigned sites', 'fleet-for-openstation' );
+			$item             = array(
 				'id'                => sanitize_key( $id ),
 				'name'              => sanitize_text_field( isset( $site['name'] ) ? $site['name'] : $site['site_url'] ),
 				'url'               => esc_url_raw( $site['site_url'] ),
@@ -564,6 +655,30 @@ final class OpenStation_Fleet {
 				$model['workspaces'][ $client ] = array();
 			}
 			$model['workspaces'][ $client ][] = $item;
+
+			if ( 'search' === $view && strlen( $query ) >= 2 ) {
+				$search = self::get_site_search( $id, $site );
+				if ( ! empty( $search['search_index_state'] ) ) {
+					$index   = new OpenStation_Fleet_Search_Index();
+					$results = $index->search( $search['search_index_state'], $query, 24 );
+				} else {
+					$needle  = function_exists( 'mb_strtolower' ) ? mb_strtolower( $query ) : strtolower( $query );
+					$results = array_filter(
+						$search['search_index'],
+						static function ( $search_item ) use ( $needle ) {
+							$text = isset( $search_item['title'], $search_item['meta'] ) ? $search_item['title'] . ' ' . $search_item['meta'] : '';
+							$text = function_exists( 'mb_strtolower' ) ? mb_strtolower( $text ) : strtolower( $text );
+							return false !== strpos( $text, $needle );
+						}
+					);
+				}
+				$model['search'][] = array(
+					'site_id'   => sanitize_key( $id ),
+					'site_name' => sanitize_text_field( $site['name'] ),
+					'items'     => array_slice( array_values( $results ), 0, 24 ),
+					'error'     => '',
+				);
+			}
 		}
 
 		usort(
@@ -577,26 +692,6 @@ final class OpenStation_Fleet {
 		);
 		uksort( $model['workspaces'], 'strnatcasecmp' );
 
-		if ( 'search' === $view && strlen( $query ) >= 2 ) {
-			$needle = function_exists( 'mb_strtolower' ) ? mb_strtolower( $query ) : strtolower( $query );
-			foreach ( $sites as $id => $site ) {
-				$results = array_filter(
-					isset( $site['search_index'] ) && is_array( $site['search_index'] ) ? $site['search_index'] : array(),
-					static function ( $item ) use ( $needle ) {
-						$text = isset( $item['title'], $item['meta'] ) ? $item['title'] . ' ' . $item['meta'] : '';
-						$text = function_exists( 'mb_strtolower' ) ? mb_strtolower( $text ) : strtolower( $text );
-						return false !== strpos( $text, $needle );
-					}
-				);
-				$model['search'][] = array(
-					'site_id'   => sanitize_key( $id ),
-					'site_name' => sanitize_text_field( $site['name'] ),
-					'items'     => array_slice( array_values( $results ), 0, 24 ),
-					'error'     => '',
-				);
-			}
-		}
-
 		return $model;
 	}
 
@@ -607,12 +702,11 @@ final class OpenStation_Fleet {
 	 * @return array|WP_Error
 	 */
 	public static function app_site( $id ) {
-		$id    = sanitize_key( $id );
-		$sites = self::get_sites();
-		if ( '' === $id || ! isset( $sites[ $id ] ) ) {
+		$id   = sanitize_key( $id );
+		$site = self::get_site( $id );
+		if ( '' === $id || ! is_array( $site ) ) {
 			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
 		}
-		$site = $sites[ $id ];
 		return array(
 			'id'                => $id,
 			'name'              => sanitize_text_field( $site['name'] ),
@@ -641,34 +735,46 @@ final class OpenStation_Fleet {
 	public static function app_site_data( $id, $section ) {
 		$id      = sanitize_key( $id );
 		$section = sanitize_key( $section );
-		$sites   = self::get_sites();
-		if ( '' === $id || ! isset( $sites[ $id ] ) ) {
+		$site    = self::get_site( $id );
+		if ( '' === $id || ! is_array( $site ) ) {
 			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
 		}
-		$site = $sites[ $id ];
 		if ( 'agency' === $section ) {
-			return array( 'agency' => $site['agency'], 'attention' => self::attention_reasons( $site ) );
+			return array(
+				'agency'    => $site['agency'],
+				'attention' => self::attention_reasons( $site ),
+			);
+		}
+		$cached = self::read_cache_get( $id, $section );
+		if ( false !== $cached ) {
+			return $cached;
 		}
 
 		switch ( $section ) {
 			case 'content':
-				return self::remote_get_map(
+				$result = self::remote_get_map(
 					$site,
 					array(
 						'posts' => 'wp/v2/posts?context=edit&status=any&per_page=30&orderby=modified&order=desc&_fields=id,title,status,modified,type',
 						'pages' => 'wp/v2/pages?context=edit&status=any&per_page=30&orderby=modified&order=desc&_fields=id,title,status,modified,type',
 					)
 				);
+				break;
 			case 'media':
-				return array( 'media' => self::remote_request( $site, 'GET', 'wp/v2/media?context=edit&per_page=30&orderby=date&order=desc&_fields=id,title,alt_text,caption,media_type,mime_type,source_url,date' ) );
+				$result = array( 'media' => self::remote_request( $site, 'GET', 'wp/v2/media?context=edit&per_page=30&orderby=date&order=desc&_fields=id,title,alt_text,caption,media_type,mime_type,source_url,date' ) );
+				break;
 			case 'comments':
-				return array( 'comments' => self::remote_request( $site, 'GET', 'wp/v2/comments?context=edit&status=all&per_page=50&orderby=date&order=desc&_fields=id,author_name,content,date,status,post' ) );
+				$result = array( 'comments' => self::remote_request( $site, 'GET', 'wp/v2/comments?context=edit&status=all&per_page=50&orderby=date&order=desc&_fields=id,author_name,content,date,status,post' ) );
+				break;
 			case 'plugins':
-				return array( 'plugins' => self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' ) );
+				$result = array( 'plugins' => self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' ) );
+				break;
 			case 'users':
-				return array( 'users' => self::remote_request( $site, 'GET', 'wp/v2/users?context=edit&per_page=100&orderby=name&_fields=id,username,name,email,roles,avatar_urls' ) );
+				$result = array( 'users' => self::remote_request( $site, 'GET', 'wp/v2/users?context=edit&per_page=100&orderby=name&_fields=id,username,name,email,roles,avatar_urls' ) );
+				break;
 			case 'settings':
-				return array( 'settings' => self::remote_request( $site, 'GET', 'wp/v2/settings?context=edit' ) );
+				$result = array( 'settings' => self::remote_request( $site, 'GET', 'wp/v2/settings?context=edit' ) );
+				break;
 			case 'design':
 				$design = self::remote_get_map(
 					$site,
@@ -685,20 +791,22 @@ final class OpenStation_Fleet {
 				if ( ! empty( $themes[0]['stylesheet'] ) ) {
 					$design['global_styles'] = self::remote_request( $site, 'GET', 'wp/v2/global-styles/themes/' . rawurlencode( $themes[0]['stylesheet'] ) );
 				}
-				return $design;
+				$result = $design;
+				break;
 			case 'api':
-				$root      = self::remote_request( $site, 'GET', '' );
+				$root       = self::remote_request( $site, 'GET', '' );
 				$namespaces = isset( $site['capabilities']['namespaces'] ) && is_array( $site['capabilities']['namespaces'] ) ? $site['capabilities']['namespaces'] : array();
-				$abilities = in_array( 'wp-abilities/v1', $namespaces, true )
+				$abilities  = in_array( 'wp-abilities/v1', $namespaces, true )
 					? self::remote_request( $site, 'GET', 'wp-abilities/v1/abilities?per_page=100&_fields=name,label,description,category,input_schema,output_schema,meta' )
 					: new WP_Error( 'openstation_fleet_abilities_unavailable', __( 'This site does not expose the WordPress Abilities API.', 'fleet-for-openstation' ) );
-				return array(
+				$result     = array(
 					'catalog'   => is_wp_error( $root ) ? $root : self::api_route_catalog( $root ),
 					'abilities' => $abilities,
 				);
+				break;
 			case 'overview':
 			default:
-				return self::remote_get_map(
+				$result = self::remote_get_map(
 					$site,
 					array(
 						'settings' => 'wp/v2/settings?context=edit&_fields=title,description,timezone_string,date_format,time_format,start_of_week',
@@ -706,7 +814,9 @@ final class OpenStation_Fleet {
 						'pages'    => 'wp/v2/pages?context=edit&status=any&per_page=5&orderby=modified&order=desc&_fields=id,title,status,modified,type',
 					)
 				);
+				break;
 		}
+		return self::read_cache_set( $id, $section, $result );
 	}
 
 	/**
@@ -733,13 +843,18 @@ final class OpenStation_Fleet {
 		if ( is_wp_error( $discovery ) ) {
 			return $discovery;
 		}
-		$id    = self::site_id( $discovery['site_url'] );
-		$sites = self::get_sites();
-		if ( isset( $sites[ $id ] ) ) {
-			return array( 'site_id' => $id, 'authorization_url' => '' );
+		if ( self::is_hub_site( $discovery['site_url'] ) ) {
+			return new WP_Error( 'openstation_fleet_self_site', __( 'The Fleet hub cannot connect to itself.', 'fleet-for-openstation' ) );
 		}
-		$state    = wp_generate_uuid4();
-		$callback = add_query_arg(
+		$id = self::site_id( $discovery['site_url'] );
+		if ( false !== self::get_site( $id ) ) {
+			return array(
+				'site_id'           => $id,
+				'authorization_url' => '',
+			);
+		}
+		$state                 = wp_generate_uuid4();
+		$callback              = add_query_arg(
 			array(
 				'action'   => 'openstation_fleet_authorized',
 				'state'    => $state,
@@ -779,41 +894,45 @@ final class OpenStation_Fleet {
 		$id     = sanitize_key( $id );
 		$action = sanitize_key( $action );
 		$values = is_array( $values ) ? $values : array();
-		$sites  = self::get_sites();
-		if ( '' === $id || ! isset( $sites[ $id ] ) ) {
+		$site   = self::get_site( $id );
+		if ( '' === $id || ! is_array( $site ) ) {
 			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
 		}
-		$site    = $sites[ $id ];
-		$result  = array( 'ok' => true );
-		$message = '';
-		$status  = 'success';
+		$result       = array( 'ok' => true );
+		$message      = '';
+		$status       = 'success';
 		$local_fields = array();
+		$search_state = null;
 
 		switch ( $action ) {
 			case 'refresh':
-				$site    = self::refresh_site( $site );
-				$result  = empty( $site['error'] ) ? array( 'ok' => true ) : new WP_Error( 'openstation_fleet_check_failed', $site['error'] );
-				$message = is_wp_error( $result ) ? __( 'Site check failed.', 'fleet-for-openstation' ) : __( 'Site status refreshed.', 'fleet-for-openstation' );
+				$search_state = self::get_site_search( $id, $site );
+				$site         = self::refresh_site( $site, true, null, $search_state );
+				$result       = empty( $site['error'] ) ? array( 'ok' => true ) : new WP_Error( 'openstation_fleet_check_failed', $site['error'] );
+				$message      = is_wp_error( $result ) ? __( 'Site check failed.', 'fleet-for-openstation' ) : __( 'Site status refreshed.', 'fleet-for-openstation' );
+				$local_fields = self::remote_state_fields();
 				break;
 			case 'finish-setup':
 			case 'install-openstation':
-				$result = self::install_openstation( $site );
+				$search_state = self::get_site_search( $id, $site );
+				$result       = self::install_openstation( $site );
 				if ( ! is_wp_error( $result ) ) {
-					$site                 = self::refresh_site( $site );
+					$site                 = self::refresh_site( $site, true, null, $search_state );
 					$site['setup_status'] = empty( $site['error'] ) ? 'ready' : 'error';
-					$result                = empty( $site['error'] ) ? array( 'ok' => true ) : new WP_Error( 'openstation_fleet_check_failed', $site['error'] );
+					$result               = empty( $site['error'] ) ? array( 'ok' => true ) : new WP_Error( 'openstation_fleet_check_failed', $site['error'] );
 				} else {
 					$site['setup_status'] = 'error';
 				}
-				$message = is_wp_error( $result ) ? __( 'OpenStation installation failed.', 'fleet-for-openstation' ) : __( 'OpenStation is installed, active, and ready.', 'fleet-for-openstation' );
+				$message      = is_wp_error( $result ) ? __( 'OpenStation installation failed.', 'fleet-for-openstation' ) : __( 'OpenStation is installed, active, and ready.', 'fleet-for-openstation' );
+				$local_fields = array_merge( self::remote_state_fields(), array( 'setup_status' ) );
 				break;
 			case 'favorite':
 				$site['agency']['favorite'] = empty( $site['agency']['favorite'] );
-				$local_fields[] = 'agency';
-				$message = $site['agency']['favorite'] ? __( 'Site added to favorites.', 'fleet-for-openstation' ) : __( 'Site removed from favorites.', 'fleet-for-openstation' );
+				$local_fields[]             = 'agency';
+				$message                    = $site['agency']['favorite'] ? __( 'Site added to favorites.', 'fleet-for-openstation' ) : __( 'Site removed from favorites.', 'fleet-for-openstation' );
 				break;
 			case 'settings':
-				$body = array(
+				$body   = array(
 					'title'           => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ),
 					'description'     => sanitize_text_field( isset( $values['description'] ) ? $values['description'] : '' ),
 					'timezone_string' => sanitize_text_field( isset( $values['timezone_string'] ) ? $values['timezone_string'] : '' ),
@@ -823,29 +942,37 @@ final class OpenStation_Fleet {
 				);
 				$result = self::remote_request( $site, 'POST', 'wp/v2/settings', $body );
 				if ( ! is_wp_error( $result ) && '' !== $body['title'] ) {
-					$site['name'] = $body['title'];
+					$site['name']   = $body['title'];
 					$local_fields[] = 'name';
 				}
 				$message = __( 'Remote site settings updated.', 'fleet-for-openstation' );
 				break;
 			case 'content':
-				$type       = sanitize_key( isset( $values['content_type'] ) ? $values['content_type'] : '' );
-				$content_id = absint( isset( $values['content_id'] ) ? $values['content_id'] : 0 );
+				$type        = sanitize_key( isset( $values['content_type'] ) ? $values['content_type'] : '' );
+				$content_id  = absint( isset( $values['content_id'] ) ? $values['content_id'] : 0 );
 				$post_status = sanitize_key( isset( $values['status'] ) ? $values['status'] : '' );
 				if ( ! in_array( $type, array( 'posts', 'pages' ), true ) || $content_id < 1 || ! in_array( $post_status, array( 'publish', 'draft', 'pending', 'future', 'private', 'trash' ), true ) ) {
 					return new WP_Error( 'openstation_fleet_invalid_content', __( 'Choose valid content and a valid status.', 'fleet-for-openstation' ) );
 				}
-				$result  = self::remote_request( $site, 'POST', 'wp/v2/' . $type . '/' . $content_id, array( 'title' => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ), 'status' => $post_status ) );
+				$result = self::remote_request(
+					$site,
+					'POST',
+					'wp/v2/' . $type . '/' . $content_id,
+					array(
+						'title'  => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ),
+						'status' => $post_status,
+					)
+				);
 				// translators: 1: content type, 2: content id.
 				$message = sprintf( __( '%1$s #%2$d updated.', 'fleet-for-openstation' ), ucfirst( $type ), $content_id );
 				break;
 			case 'comment':
-				$comment_id = absint( isset( $values['comment_id'] ) ? $values['comment_id'] : 0 );
+				$comment_id     = absint( isset( $values['comment_id'] ) ? $values['comment_id'] : 0 );
 				$comment_status = sanitize_key( isset( $values['status'] ) ? $values['status'] : '' );
 				if ( $comment_id < 1 || ! in_array( $comment_status, array( 'approved', 'hold', 'spam', 'trash' ), true ) ) {
 					return new WP_Error( 'openstation_fleet_invalid_comment', __( 'Choose a valid comment status.', 'fleet-for-openstation' ) );
 				}
-				$result  = self::remote_request( $site, 'POST', 'wp/v2/comments/' . $comment_id, array( 'status' => $comment_status ) );
+				$result = self::remote_request( $site, 'POST', 'wp/v2/comments/' . $comment_id, array( 'status' => $comment_status ) );
 				// translators: %s: comment status.
 				$message = sprintf( __( 'Comment moved to %s.', 'fleet-for-openstation' ), $comment_status );
 				break;
@@ -854,7 +981,16 @@ final class OpenStation_Fleet {
 				if ( $media_id < 1 ) {
 					return new WP_Error( 'openstation_fleet_invalid_media', __( 'Choose a valid media item.', 'fleet-for-openstation' ) );
 				}
-				$result  = self::remote_request( $site, 'POST', 'wp/v2/media/' . $media_id, array( 'title' => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ), 'alt_text' => sanitize_text_field( isset( $values['alt_text'] ) ? $values['alt_text'] : '' ), 'caption' => sanitize_textarea_field( isset( $values['caption'] ) ? $values['caption'] : '' ) ) );
+				$result  = self::remote_request(
+					$site,
+					'POST',
+					'wp/v2/media/' . $media_id,
+					array(
+						'title'    => sanitize_text_field( isset( $values['title'] ) ? $values['title'] : '' ),
+						'alt_text' => sanitize_text_field( isset( $values['alt_text'] ) ? $values['alt_text'] : '' ),
+						'caption'  => sanitize_textarea_field( isset( $values['caption'] ) ? $values['caption'] : '' ),
+					)
+				);
 				$message = __( 'Media details updated.', 'fleet-for-openstation' );
 				break;
 			case 'plugin':
@@ -863,8 +999,8 @@ final class OpenStation_Fleet {
 				if ( ! preg_match( '#^[a-z0-9._-]+(?:/[a-z0-9._-]+)?$#i', $plugin ) || ! in_array( $plugin_status, array( 'active', 'inactive' ), true ) ) {
 					return new WP_Error( 'openstation_fleet_invalid_plugin', __( 'Choose a valid plugin action.', 'fleet-for-openstation' ) );
 				}
-				$route   = implode( '/', array_map( 'rawurlencode', explode( '/', $plugin ) ) );
-				$result  = self::remote_request( $site, 'POST', 'wp/v2/plugins/' . $route, array( 'status' => $plugin_status ) );
+				$route  = implode( '/', array_map( 'rawurlencode', explode( '/', $plugin ) ) );
+				$result = self::remote_request( $site, 'POST', 'wp/v2/plugins/' . $route, array( 'status' => $plugin_status ) );
 				// translators: 1: plugin id, 2: plugin status.
 				$message = sprintf( __( '%1$s set to %2$s.', 'fleet-for-openstation' ), $plugin, $plugin_status );
 				break;
@@ -874,7 +1010,15 @@ final class OpenStation_Fleet {
 				if ( ! preg_match( '/^[a-z0-9][a-z0-9._-]*$/', $slug ) || ! in_array( $plugin_status, array( 'active', 'inactive' ), true ) ) {
 					return new WP_Error( 'openstation_fleet_invalid_plugin', __( 'Enter a valid WordPress.org plugin slug.', 'fleet-for-openstation' ) );
 				}
-				$result  = self::remote_request( $site, 'POST', 'wp/v2/plugins', array( 'slug' => $slug, 'status' => $plugin_status ) );
+				$result = self::remote_request(
+					$site,
+					'POST',
+					'wp/v2/plugins',
+					array(
+						'slug'   => $slug,
+						'status' => $plugin_status,
+					)
+				);
 				// translators: %s: WordPress.org plugin slug.
 				$message = sprintf( __( 'Plugin %s installed.', 'fleet-for-openstation' ), $slug );
 				break;
@@ -886,10 +1030,20 @@ final class OpenStation_Fleet {
 				if ( '' === $username || ! is_email( $email ) || strlen( $password ) < 12 || ! in_array( $role, self::editable_roles(), true ) ) {
 					return new WP_Error( 'openstation_fleet_invalid_user', __( 'Enter a username, valid email, role, and password of at least 12 characters.', 'fleet-for-openstation' ) );
 				}
-				$result   = self::remote_request( $site, 'POST', 'wp/v2/users', array( 'username' => $username, 'email' => $email, 'password' => $password, 'roles' => array( $role ) ) );
+				$result   = self::remote_request(
+					$site,
+					'POST',
+					'wp/v2/users',
+					array(
+						'username' => $username,
+						'email'    => $email,
+						'password' => $password,
+						'roles'    => array( $role ),
+					)
+				);
 				$password = null;
 				// translators: %s: new WordPress username.
-				$message  = sprintf( __( 'User %s created.', 'fleet-for-openstation' ), $username );
+				$message = sprintf( __( 'User %s created.', 'fleet-for-openstation' ), $username );
 				break;
 			case 'user':
 				$user_id = absint( isset( $values['user_id'] ) ? $values['user_id'] : 0 );
@@ -899,13 +1053,22 @@ final class OpenStation_Fleet {
 				if ( $user_id < 1 || '' === $name || ! is_email( $email ) || ! in_array( $role, self::editable_roles(), true ) ) {
 					return new WP_Error( 'openstation_fleet_invalid_user', __( 'Enter a display name, valid email, and role.', 'fleet-for-openstation' ) );
 				}
-				$result  = self::remote_request( $site, 'POST', 'wp/v2/users/' . $user_id, array( 'name' => $name, 'email' => $email, 'roles' => array( $role ) ) );
+				$result = self::remote_request(
+					$site,
+					'POST',
+					'wp/v2/users/' . $user_id,
+					array(
+						'name'  => $name,
+						'email' => $email,
+						'roles' => array( $role ),
+					)
+				);
 				// translators: %d: WordPress user id.
 				$message = sprintf( __( 'User #%d updated.', 'fleet-for-openstation' ), $user_id );
 				break;
 			case 'agency':
-				$plan = sanitize_key( isset( $values['plan_status'] ) ? $values['plan_status'] : 'none' );
-				$tags = preg_split( '/[,\r\n]+/', isset( $values['tags'] ) ? (string) $values['tags'] : '' );
+				$plan           = sanitize_key( isset( $values['plan_status'] ) ? $values['plan_status'] : 'none' );
+				$tags           = preg_split( '/[,\r\n]+/', isset( $values['tags'] ) ? (string) $values['tags'] : '' );
 				$site['agency'] = array(
 					'client_name' => sanitize_text_field( isset( $values['client_name'] ) ? $values['client_name'] : '' ),
 					'tags'        => array_values( array_unique( array_filter( array_map( 'sanitize_text_field', is_array( $tags ) ? $tags : array() ) ) ) ),
@@ -914,7 +1077,7 @@ final class OpenStation_Fleet {
 					'favorite'    => ! empty( $values['favorite'] ),
 				);
 				$local_fields[] = 'agency';
-				$message = __( 'Agency profile updated.', 'fleet-for-openstation' );
+				$message        = __( 'Agency profile updated.', 'fleet-for-openstation' );
 				break;
 			case 'api':
 				$method = strtoupper( sanitize_key( isset( $values['api_method'] ) ? $values['api_method'] : 'GET' ) );
@@ -943,9 +1106,15 @@ final class OpenStation_Fleet {
 				if ( is_wp_error( $revoked ) ) {
 					return $revoked;
 				}
-				self::remove_site( $id );
+				if ( ! self::remove_site( $id, $site['connection_generation'] ) ) {
+					return new WP_Error( 'openstation_fleet_storage_failed', __( 'The remote authorization was revoked, but Fleet could not remove its local connection. Refresh this window before continuing.', 'fleet-for-openstation' ) );
+				}
+				self::invalidate_read_cache( $id );
 				self::record_activity( $id, $site, 'disconnected', __( 'Remote authorization revoked and site disconnected.', 'fleet-for-openstation' ) );
-				return array( 'ok' => true, 'disconnected' => true );
+				return array(
+					'ok'           => true,
+					'disconnected' => true,
+				);
 			default:
 				return new WP_Error( 'openstation_fleet_unknown_action', __( 'Fleet did not recognize that action.', 'fleet-for-openstation' ) );
 		}
@@ -954,11 +1123,19 @@ final class OpenStation_Fleet {
 			$status  = 'error';
 			$message = $result->get_error_message();
 		}
-		if ( ! self::save_site( $id, $site, $local_fields ) ) {
+		if ( is_array( $search_state ) && ! self::save_site_search( $id, $site, $search_state ) ) {
+			return new WP_Error( 'openstation_fleet_storage_failed', __( 'The site check completed, but Fleet could not save its search index. Refresh this window before continuing.', 'fleet-for-openstation' ) );
+		}
+		if ( ! empty( $local_fields ) && ! self::save_site( $id, $site, $local_fields ) ) {
 			return new WP_Error( 'openstation_fleet_storage_failed', __( 'The remote action completed, but Fleet could not save its local state. Refresh this window before continuing.', 'fleet-for-openstation' ) );
 		}
+		self::invalidate_read_cache( $id );
 		self::record_activity( $id, $site, $action, $message, $status );
-		return is_wp_error( $result ) ? $result : array( 'ok' => true, 'message' => $message, 'data' => $result );
+		return is_wp_error( $result ) ? $result : array(
+			'ok'      => true,
+			'message' => $message,
+			'data'    => $result,
+		);
 	}
 
 	/**
@@ -1053,7 +1230,7 @@ final class OpenStation_Fleet {
 				continue;
 			}
 
-			$name = isset( $data['name'] ) ? sanitize_text_field( $data['name'] ) : wp_parse_url( $reported_url, PHP_URL_HOST );
+			$name              = isset( $data['name'] ) ? sanitize_text_field( $data['name'] ) : wp_parse_url( $reported_url, PHP_URL_HOST );
 			$authorization_url = isset( $data['authentication']['application-passwords']['endpoints']['authorization'] )
 				? $data['authentication']['application-passwords']['endpoints']['authorization']
 				: '';
@@ -1076,39 +1253,76 @@ final class OpenStation_Fleet {
 	/**
 	 * Refresh cached OpenStation status for one site.
 	 *
-	 * @param array $site           Site record.
-	 * @param bool  $refresh_health Run the heavier Core Site Health tests now.
+	 * @param array      $site         Site record.
+	 * @param bool       $force        Refresh every tier regardless of its cadence.
+	 * @param float|null $deadline     Optional cron wall-clock deadline.
+	 * @param array|null $search_state Separately persisted search payload, updated in place when metadata is due.
 	 * @return array
 	 */
-	private static function refresh_site( $site, $refresh_health = true ) {
-		$site                 = self::normalize_site_record( $site );
-		$site['last_checked'] = time();
-		$root                 = self::remote_request( $site, 'GET', '' );
+	private static function refresh_site( $site, $force = true, $deadline = null, &$search_state = null ) {
+		$site         = self::normalize_site_record( $site );
+		$now          = time();
+		$status_due   = OpenStation_Fleet_Sync_Policy::due( $site, 'status', $now, $force );
+		$metadata_due = OpenStation_Fleet_Sync_Policy::due( $site, 'metadata', $now, $force );
+		$health_due   = OpenStation_Fleet_Sync_Policy::due( $site, 'health', $now, $force );
+		if ( ! $status_due && ! $metadata_due && ! $health_due ) {
+			return $site;
+		}
+
+		$site['last_checked'] = $now;
+		$root                 = self::remote_request( $site, 'GET', '', null, $deadline );
 		if ( is_wp_error( $root ) ) {
-			$site['error'] = $root->get_error_message();
-			return $site;
+			return OpenStation_Fleet_Sync_Policy::failed( $site, $root->get_error_message(), $now );
 		}
-
 		$site['capabilities'] = self::discover_capabilities( $root );
-		$site['environment']  = self::fetch_core_environment( $site );
-		$site['wordpress_version'] = ! empty( $site['environment']['wp_version'] )
-			? $site['environment']['wp_version']
-			: self::wordpress_version_from_root( $root );
-		$plugins                   = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit' );
-		if ( is_wp_error( $plugins ) ) {
-			$site['error'] = $plugins->get_error_message();
-			return $site;
+
+		if ( $status_due && self::sync_has_time( $deadline ) ) {
+			$site['inbox']          = self::fetch_inbox_summary( $site, $deadline );
+			$site['status_checked'] = $now;
 		}
 
-		$site['openstation'] = self::inspect_plugins( $plugins );
-		$site['inbox']       = self::fetch_inbox_summary( $site );
-		$site['search_index'] = self::fetch_search_index( $site );
-		if ( $refresh_health || $site['health_checked'] < time() - ( 6 * HOUR_IN_SECONDS ) ) {
-			$site['health']         = self::fetch_site_health( $site );
-			$site['health_checked'] = time();
+		if ( $metadata_due && self::sync_has_time( $deadline ) ) {
+			if ( ! is_array( $search_state ) ) {
+				$search_state = array(
+					'search_index_state' => array(),
+					'search_index'       => array(),
+				);
+			}
+			$site['environment']       = self::fetch_core_environment( $site, $deadline );
+			$site['wordpress_version'] = ! empty( $site['environment']['wp_version'] )
+				? $site['environment']['wp_version']
+				: self::wordpress_version_from_root( $root );
+			if ( ! self::sync_has_time( $deadline ) ) {
+				return OpenStation_Fleet_Sync_Policy::succeeded( $site );
+			}
+			$plugins = self::remote_request( $site, 'GET', 'wp/v2/plugins?context=edit', null, $deadline );
+			if ( is_wp_error( $plugins ) ) {
+				return OpenStation_Fleet_Sync_Policy::failed( $site, $plugins->get_error_message(), $now );
+			}
+			$site['openstation'] = self::inspect_plugins( $plugins );
+			if ( self::sync_has_time( $deadline ) ) {
+				$search_state['search_index_state'] = self::fetch_search_index( $site, $search_state, $force ? 2 : 1, $deadline )['state'];
+				$search_state['search_index']       = array();
+				$site['metadata_checked']           = $now;
+			}
 		}
-		$site['error'] = '';
-		return $site;
+
+		if ( $health_due && self::sync_has_time( $deadline ) ) {
+			$site['health']         = self::fetch_site_health( $site, $deadline );
+			$site['health_checked'] = $now;
+		}
+		return OpenStation_Fleet_Sync_Policy::succeeded( $site );
+	}
+
+	/**
+	 * Whether another bounded network operation may begin.
+	 *
+	 * @param float|null $deadline Wall-clock deadline or null outside cron.
+	 * @return bool
+	 * @phpstan-impure Reads the current wall clock on every call.
+	 */
+	private static function sync_has_time( $deadline ) {
+		return null === $deadline || microtime( true ) < $deadline;
 	}
 
 	/**
@@ -1118,33 +1332,27 @@ final class OpenStation_Fleet {
 	 * request that happens to spawn WP-Cron into a long remote-request chain.
 	 */
 	public static function run_scheduled_checks() {
-		$token = wp_generate_uuid4();
-		$lock  = get_option( self::CRON_LOCK, array() );
-		if ( is_array( $lock ) && ! empty( $lock['expires'] ) && (int) $lock['expires'] <= time() ) {
-			delete_option( self::CRON_LOCK );
-		}
-		if ( ! add_option( self::CRON_LOCK, array( 'token' => $token, 'expires' => time() + ( 4 * MINUTE_IN_SECONDS ) ), '', 'no' ) ) {
+		$started = microtime( true );
+		$lock    = OpenStation_Fleet_Repository::acquire_lock( 'cron', 0 );
+		if ( false === $lock ) {
 			return;
 		}
 
 		$original_user = get_current_user_id();
 		try {
 			$jobs     = array();
-			$user_ids = get_users(
-				array(
-					'fields'   => 'ids',
-					// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Select only users who have Fleet data.
-					'meta_key' => self::USER_META_SITES,
-				)
-			);
+			$user_ids = OpenStation_Fleet_Repository::user_ids();
 			foreach ( $user_ids as $user_id ) {
 				$user_id = (int) $user_id;
 				if ( ! user_can( $user_id, self::CAPABILITY ) ) {
 					continue;
 				}
 				wp_set_current_user( $user_id );
-				foreach ( array_keys( self::get_sites() ) as $site_id ) {
-					$jobs[] = array( 'user_id' => $user_id, 'site_id' => sanitize_key( $site_id ) );
+				foreach ( self::get_site_ids() as $site_id ) {
+					$jobs[] = array(
+						'user_id' => $user_id,
+						'site_id' => sanitize_key( $site_id ),
+					);
 				}
 			}
 
@@ -1156,19 +1364,36 @@ final class OpenStation_Fleet {
 					break;
 				}
 			}
-			$slice = array_slice( $jobs, $start, self::CRON_BATCH_SIZE );
-			foreach ( $slice as $job ) {
+			$completed = $start;
+			$job_count = count( $jobs );
+			for ( $index = $start; $index < $job_count; ++$index ) {
+				if ( $index > $start && microtime( true ) - $started >= OpenStation_Fleet_Sync_Policy::RUN_BUDGET ) {
+					break;
+				}
+				$job = $jobs[ $index ];
 				wp_set_current_user( $job['user_id'] );
-				$sites = self::get_sites();
-				if ( ! isset( $sites[ $job['site_id'] ] ) ) {
+				$site = self::get_site( $job['site_id'] );
+				if ( ! is_array( $site ) ) {
 					update_option( self::CRON_CURSOR, $job['user_id'] . ':' . $job['site_id'], false );
+					$completed = $index + 1;
 					continue;
 				}
-				$site   = $sites[ $job['site_id'] ];
-				$before = count( self::attention_reasons( $site ) );
-				$site   = self::refresh_site( $site, false );
-				$after  = count( self::attention_reasons( $site ) );
-				self::save_site( $job['site_id'], $site );
+				$before       = count( self::attention_reasons( $site ) );
+				$search_state = OpenStation_Fleet_Sync_Policy::due( $site, 'metadata', time(), false )
+					? self::get_site_search( $job['site_id'], $site )
+					: null;
+				$site         = self::refresh_site( $site, false, $started + OpenStation_Fleet_Sync_Policy::RUN_BUDGET, $search_state );
+				$after        = count( self::attention_reasons( $site ) );
+				if ( is_array( $search_state ) && ! self::save_site_search( $job['site_id'], $site, $search_state ) ) {
+					update_option( self::CRON_CURSOR, $job['user_id'] . ':' . $job['site_id'], false );
+					$completed = $index + 1;
+					continue;
+				}
+				if ( ! self::save_site( $job['site_id'], $site, self::remote_state_fields() ) ) {
+					update_option( self::CRON_CURSOR, $job['user_id'] . ':' . $job['site_id'], false );
+					$completed = $index + 1;
+					continue;
+				}
 				if ( $before !== $after ) {
 					self::record_activity(
 						$job['site_id'],
@@ -1179,16 +1404,14 @@ final class OpenStation_Fleet {
 					);
 				}
 				update_option( self::CRON_CURSOR, $job['user_id'] . ':' . $job['site_id'], false );
+				$completed = $index + 1;
 			}
-			if ( empty( $slice ) || $start + count( $slice ) >= count( $jobs ) ) {
+			if ( $completed >= $job_count ) {
 				delete_option( self::CRON_CURSOR );
 			}
 		} finally {
 			wp_set_current_user( $original_user );
-			$owned_lock = get_option( self::CRON_LOCK, array() );
-			if ( is_array( $owned_lock ) && isset( $owned_lock['token'] ) && hash_equals( (string) $owned_lock['token'], $token ) ) {
-				delete_option( self::CRON_LOCK );
-			}
+			OpenStation_Fleet_Repository::release_lock( $lock );
 		}
 	}
 
@@ -1224,7 +1447,13 @@ final class OpenStation_Fleet {
 			'templates'   => $has( '/wp/v2/templates' ) || $has( '/wp/v2/template-parts' ),
 			'patterns'    => $has( '/wp/v2/blocks' ) || $has( '/wp/v2/block-patterns/patterns' ),
 			'blocks'      => $has( '/wp/v2/block-types' ),
-			'styles'      => 0 < count( array_filter( $routes, static function ( $route ) { return 0 === strpos( $route, '/wp/v2/global-styles/' ); } ) ),
+			'styles'      => 0 < count(
+				array_filter(
+					$routes,
+					static function ( $route ) {
+						return 0 === strpos( $route, '/wp/v2/global-styles/' ); }
+				)
+			),
 			'fonts'       => $has( '/wp/v2/font-families' ),
 			'statuses'    => $has( '/wp/v2/statuses' ),
 			'site_health' => $has( '/wp-site-health/v1/tests/background-updates' ),
@@ -1240,15 +1469,16 @@ final class OpenStation_Fleet {
 	 * schemas and public exposure contract friendlier to external clients. This
 	 * call adds richer environment facts to the REST-index capability baseline.
 	 *
-	 * @param array $site Connected site record with discovered capabilities.
+	 * @param array      $site Connected site record with discovered capabilities.
+	 * @param float|null $deadline Optional wall-clock deadline.
 	 * @return array
 	 */
-	private static function fetch_core_environment( $site ) {
+	private static function fetch_core_environment( $site, $deadline = null ) {
 		if ( empty( $site['capabilities']['abilities'] ) ) {
 			return array();
 		}
 
-		$environment = self::remote_request( $site, 'GET', 'wp-abilities/v1/abilities/core/get-environment-info/run' );
+		$environment = self::remote_request( $site, 'GET', 'wp-abilities/v1/abilities/core/get-environment-info/run', null, $deadline );
 		if ( is_wp_error( $environment ) || ! is_array( $environment ) ) {
 			return array();
 		}
@@ -1329,21 +1559,22 @@ final class OpenStation_Fleet {
 	/**
 	 * Run the Site Health tests that Core exposes through REST.
 	 *
-	 * @param array $site Connected site record.
+	 * @param array      $site Connected site record.
+	 * @param float|null $deadline Optional wall-clock deadline.
 	 * @return array
 	 */
-	private static function fetch_site_health( &$site ) {
+	private static function fetch_site_health( &$site, $deadline = null ) {
 		if ( empty( $site['capabilities']['site_health'] ) ) {
 			return array();
 		}
-		$tests = array(
+		$tests     = array(
 			'background-updates'   => 'wp-site-health/v1/tests/background-updates',
 			'loopback-requests'    => 'wp-site-health/v1/tests/loopback-requests',
 			'https-status'         => 'wp-site-health/v1/tests/https-status',
 			'dotorg-communication' => 'wp-site-health/v1/tests/dotorg-communication',
 			'authorization-header' => 'wp-site-health/v1/tests/authorization-header',
 		);
-		$responses = self::remote_get_map( $site, $tests );
+		$responses = self::remote_get_map( $site, $tests, $deadline );
 		$results   = array();
 		foreach ( $responses as $key => $result ) {
 			if ( is_wp_error( $result ) || empty( $result['status'] ) ) {
@@ -1376,8 +1607,8 @@ final class OpenStation_Fleet {
 			'checked'          => 0,
 			'pending_comments' => $empty_collection,
 			'drafts'           => $empty_collection,
-			'pending_posts'     => $empty_collection,
-			'scheduled_posts'   => $empty_collection,
+			'pending_posts'    => $empty_collection,
+			'scheduled_posts'  => $empty_collection,
 		);
 	}
 
@@ -1392,7 +1623,7 @@ final class OpenStation_Fleet {
 		$summary               = is_array( $summary ) ? $summary : array();
 		$normalized['checked'] = max( 0, isset( $summary['checked'] ) ? (int) $summary['checked'] : 0 );
 		foreach ( array( 'pending_comments', 'drafts', 'pending_posts', 'scheduled_posts' ) as $key ) {
-			$collection = isset( $summary[ $key ] ) && is_array( $summary[ $key ] ) ? $summary[ $key ] : array();
+			$collection         = isset( $summary[ $key ] ) && is_array( $summary[ $key ] ) ? $summary[ $key ] : array();
 			$normalized[ $key ] = array(
 				'count' => max( 0, isset( $collection['count'] ) ? (int) $collection['count'] : 0 ),
 				'items' => isset( $collection['items'] ) && is_array( $collection['items'] ) ? array_slice( $collection['items'], 0, 5 ) : array(),
@@ -1409,10 +1640,11 @@ final class OpenStation_Fleet {
 	 * modern WordPress sites. Fleet falls back to the same individual Core
 	 * collection routes when the batch route is unavailable.
 	 *
-	 * @param array $site Site record.
+	 * @param array      $site Site record.
+	 * @param float|null $deadline Optional wall-clock deadline.
 	 * @return array
 	 */
-	private static function fetch_inbox_summary( $site ) {
+	private static function fetch_inbox_summary( $site, $deadline = null ) {
 		$summary  = self::empty_inbox_summary();
 		$requests = array();
 		$keys     = array();
@@ -1435,7 +1667,11 @@ final class OpenStation_Fleet {
 			);
 		}
 		if ( self::supports( $site, 'posts' ) ) {
-			foreach ( array( 'drafts' => 'draft', 'pending_posts' => 'pending', 'scheduled_posts' => 'future' ) as $key => $status ) {
+			foreach ( array(
+				'drafts'          => 'draft',
+				'pending_posts'   => 'pending',
+				'scheduled_posts' => 'future',
+			) as $key => $status ) {
 				$keys[]     = $key;
 				$requests[] = array(
 					'method' => 'GET',
@@ -1459,7 +1695,7 @@ final class OpenStation_Fleet {
 			return $summary;
 		}
 
-		$responses = self::remote_batch( $site, $requests );
+		$responses = self::remote_batch( $site, $requests, $deadline );
 		if ( is_wp_error( $responses ) ) {
 			foreach ( $keys as $key ) {
 				$summary[ $key ]['error'] = $responses->get_error_message();
@@ -1477,11 +1713,12 @@ final class OpenStation_Fleet {
 	 * managed site advertises it. Each result remains independently usable so
 	 * one unavailable collection does not hide successful siblings.
 	 *
-	 * @param array $site  Site record.
-	 * @param array $paths Map of result keys to REST paths.
+	 * @param array      $site  Site record.
+	 * @param array      $paths Map of result keys to REST paths.
+	 * @param float|null $deadline Optional wall-clock deadline.
 	 * @return array Map of result keys to response bodies or WP_Error objects.
 	 */
-	private static function remote_get_map( $site, $paths ) {
+	private static function remote_get_map( $site, $paths, $deadline = null ) {
 		if ( empty( $paths ) ) {
 			return array();
 		}
@@ -1494,7 +1731,7 @@ final class OpenStation_Fleet {
 			);
 		}
 
-		$responses = self::remote_batch( $site, $requests );
+		$responses = self::remote_batch( $site, $requests, $deadline );
 		if ( is_wp_error( $responses ) ) {
 			return array_fill_keys( array_keys( $paths ), $responses );
 		}
@@ -1514,16 +1751,17 @@ final class OpenStation_Fleet {
 	/**
 	 * Send existing REST requests through Core's batch route where available.
 	 *
-	 * @param array $site     Site record.
-	 * @param array $requests Core REST subrequests.
-	 * @return array|WP_Error Response envelopes in request order.
+	 * @param array      $site     Site record.
+	 * @param array      $requests Core REST subrequests.
+	 * @param float|null $deadline Optional wall-clock deadline.
+	 * @return array Response envelopes in request order.
 	 */
-	private static function remote_batch( $site, $requests ) {
+	private static function remote_batch( $site, $requests, $deadline = null ) {
 		if ( empty( $requests ) ) {
 			return array();
 		}
 		if ( self::supports( $site, 'batch' ) ) {
-			$result = self::remote_request( $site, 'POST', 'batch/v1', array( 'requests' => array_values( $requests ) ) );
+			$result = self::remote_request( $site, 'POST', 'batch/v1', array( 'requests' => array_values( $requests ) ), $deadline );
 			if ( ! is_wp_error( $result ) && isset( $result['responses'] ) && is_array( $result['responses'] ) && count( $result['responses'] ) === count( $requests ) ) {
 				$envelopes = array();
 				foreach ( $result['responses'] as $response ) {
@@ -1541,7 +1779,7 @@ final class OpenStation_Fleet {
 					$error  = '';
 					if ( $status < 200 || $status >= 300 ) {
 						// translators: %d: remote HTTP status code.
-						$error = is_array( $body ) && ! empty( $body['message'] ) ? sanitize_text_field( wp_strip_all_tags( $body['message'] ) ) : sprintf( __( 'WordPress returned HTTP %d.', 'fleet-for-openstation' ), $status );
+						$error = sprintf( __( 'WordPress returned HTTP %d.', 'fleet-for-openstation' ), $status );
 					}
 					$envelopes[] = array(
 						'status'  => $status,
@@ -1556,10 +1794,10 @@ final class OpenStation_Fleet {
 
 		$envelopes = array();
 		foreach ( $requests as $request ) {
-			$method = isset( $request['method'] ) ? strtoupper( (string) $request['method'] ) : 'GET';
-			$path   = isset( $request['path'] ) ? ltrim( (string) $request['path'], '/' ) : '';
-			$body   = isset( $request['body'] ) && is_array( $request['body'] ) ? $request['body'] : null;
-			$result = self::remote_request( $site, $method, $path, $body );
+			$method      = isset( $request['method'] ) ? strtoupper( (string) $request['method'] ) : 'GET';
+			$path        = isset( $request['path'] ) ? ltrim( (string) $request['path'], '/' ) : '';
+			$body        = isset( $request['body'] ) && is_array( $request['body'] ) ? $request['body'] : null;
+			$result      = self::remote_request( $site, $method, $path, $body, $deadline );
 			$envelopes[] = array(
 				'status'  => is_wp_error( $result ) ? 0 : 200,
 				'headers' => array(),
@@ -1653,138 +1891,43 @@ final class OpenStation_Fleet {
 	/**
 	 * Send an authenticated request to a target site's Core REST API.
 	 *
-	 * @param array       $site   Site record.
-	 * @param string      $method HTTP method.
-	 * @param string      $path   REST route without leading slash.
-	 * @param array|null  $body   Optional JSON body.
+	 * @param array      $site   Site record.
+	 * @param string     $method HTTP method.
+	 * @param string     $path   REST route without leading slash.
+	 * @param array|null $body   Optional JSON body.
+	 * @param float|null $deadline Optional wall-clock deadline.
 	 * @return array|WP_Error
 	 */
-	private static function remote_request( &$site, $method, $path, $body = null ) {
-		$credential = self::open_secret( isset( $site['secret'] ) ? (string) $site['secret'] : '' );
-		if ( is_wp_error( $credential ) ) {
-			return $credential;
+	private static function remote_request( &$site, $method, $path, $body = null, $deadline = null ) {
+		$timeout = self::request_timeout( $deadline );
+		if ( false === $timeout ) {
+			return new WP_Error( 'openstation_fleet_sync_budget', __( 'The Fleet synchronization time budget was reached.', 'fleet-for-openstation' ) );
 		}
-		$authorization = 'Basic ' . base64_encode( (string) $site['user_login'] . ':' . $credential );
-
-		$args = array(
-			'method'              => $method,
-			'timeout'             => self::REQUEST_TIMEOUT,
-			'redirection'         => 0,
-			'limit_response_size' => self::RESPONSE_LIMIT,
-			'headers'             => array(
-				'Accept'        => 'application/json',
-				'Authorization' => $authorization,
-			),
-		);
-		if ( null !== $body ) {
-			$args['headers']['Content-Type'] = 'application/json';
-			$args['body']                    = wp_json_encode( $body );
-			$args['data_format']             = 'body';
-		}
-
-		$response      = self::safe_authenticated_request( self::api_url( $site, $path ), $args, $site['site_url'] );
-		$credential    = null;
-		$authorization = null;
-		unset( $args['headers']['Authorization'] );
-		// translators: %d: remote HTTP status code.
-		return self::decode_remote_response( $response, 'openstation_fleet_remote_error', __( 'The remote site returned HTTP %d.', 'fleet-for-openstation' ) );
+		return OpenStation_Fleet_REST_Client::request( $site, $method, $path, $body, $timeout );
 	}
 
 	/**
-	 * Follow at most one authenticated redirect, and only when it remains on
-	 * the managed site's HTTPS origin. Mutating requests require a redirect
-	 * status that explicitly preserves the HTTP method.
+	 * Bound one HTTP timeout to the remaining cron wall-clock budget.
 	 *
-	 * @param string $url      REST endpoint URL.
-	 * @param array  $args     WordPress HTTP API arguments.
-	 * @param string $site_url Managed site URL.
-	 * @return array|WP_Error
+	 * @param float|null $deadline Optional wall-clock deadline.
+	 * @return int|false Timeout in seconds, or false after the deadline.
+	 * @phpstan-impure Reads the current wall clock.
 	 */
-	private static function safe_authenticated_request( $url, $args, $site_url ) {
-		$response = wp_safe_remote_request( $url, $args );
-		if ( is_wp_error( $response ) ) {
-			return $response;
+	private static function request_timeout( $deadline ) {
+		if ( null === $deadline ) {
+			return OpenStation_Fleet_REST_Client::REQUEST_TIMEOUT;
 		}
-
-		$code = wp_remote_retrieve_response_code( $response );
-		if ( ! in_array( $code, array( 301, 302, 307, 308 ), true ) ) {
-			return $response;
+		$remaining = (float) $deadline - microtime( true );
+		if ( $remaining <= 0 ) {
+			return false;
 		}
-		$method = isset( $args['method'] ) ? strtoupper( (string) $args['method'] ) : 'GET';
-		if ( ! in_array( $method, array( 'GET', 'HEAD' ), true ) && ! in_array( $code, array( 307, 308 ), true ) ) {
-			return $response;
-		}
-
-		$location = (string) wp_remote_retrieve_header( $response, 'location' );
-		if ( 0 === strpos( $location, '//' ) ) {
-			return $response;
-		}
-		if ( 0 === strpos( $location, '/' ) ) {
-			$location = self::url_origin( $site_url ) . $location;
-		}
-		if ( ! self::is_same_origin_https_url( $location, $site_url ) ) {
-			return $response;
-		}
-		return wp_safe_remote_request( $location, $args );
-	}
-
-	/**
-	 * Validate an HTTP response as a WordPress REST JSON object or collection.
-	 * Empty successful responses are normalized to an empty array.
-	 *
-	 * @param array|WP_Error $response      WordPress HTTP response.
-	 * @param string         $error_code    Error code for non-success status.
-	 * @param string         $http_message  HTTP error message with one %d placeholder.
-	 * @return array|WP_Error
-	 */
-	private static function decode_remote_response( $response, $error_code, $http_message ) {
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-
-		$code     = wp_remote_retrieve_response_code( $response );
-		$raw      = wp_remote_retrieve_body( $response );
-		$has_body = '' !== trim( (string) $raw );
-		$data     = $has_body ? json_decode( $raw, true ) : array();
-		if ( $code < 200 || $code >= 300 ) {
-			$message = is_array( $data ) && ! empty( $data['message'] )
-				? wp_strip_all_tags( $data['message'] )
-				: sprintf( $http_message, $code );
-			return new WP_Error( $error_code, $message, array( 'status' => $code ) );
-		}
-		if ( ( $has_body && JSON_ERROR_NONE !== json_last_error() ) || ! is_array( $data ) ) {
-			return new WP_Error( 'openstation_fleet_invalid_response', __( 'The remote site returned an invalid JSON response.', 'fleet-for-openstation' ) );
-		}
-
-		return $data;
-	}
-
-	/**
-	 * Build a REST endpoint for pretty or plain permalink sites.
-	 *
-	 * @param array  $site Site record.
-	 * @param string $path REST route.
-	 * @return string
-	 */
-	private static function api_url( $site, $path ) {
-		$path = ltrim( $path, '/' );
-		if ( false !== strpos( (string) $site['rest_url'], 'rest_route=' ) ) {
-			$parts = explode( '?', $path, 2 );
-			$url   = add_query_arg( 'rest_route', '/' . $parts[0], trailingslashit( $site['site_url'] ) );
-			if ( isset( $parts[1] ) ) {
-				parse_str( $parts[1], $query );
-				$url = add_query_arg( $query, $url );
-			}
-			return $url;
-		}
-
-		return trailingslashit( (string) $site['rest_url'] ) . $path;
+		return max( 1, min( OpenStation_Fleet_REST_Client::REQUEST_TIMEOUT, (int) ceil( $remaining ) ) );
 	}
 
 	/**
 	 * Build the Application Password authorization URL.
 	 *
-	 * add_query_arg() expects new values to already be URL-encoded. Encoding
+	 * Add_query_arg() expects new values to already be URL-encoded. Encoding
 	 * nested callback URLs keeps their state and nonce arguments inside the
 	 * success and rejection URLs instead of leaking them into the outer query.
 	 *
@@ -1801,83 +1944,121 @@ final class OpenStation_Fleet {
 	}
 
 	/**
-	 * Encrypt a remote credential using sodium bundled by WordPress.
+	 * Read a short-lived managed-tab response shared by concurrent windows.
 	 *
-	 * @param string $secret Plaintext secret.
-	 * @return string|WP_Error
+	 * @param string $site_id Site id.
+	 * @param string $section Tab section.
+	 * @return array|false
 	 */
-	private static function seal_secret( $secret ) {
-		self::load_sodium();
-		if ( ! function_exists( 'sodium_crypto_secretbox' ) ) {
-			return new WP_Error( 'openstation_fleet_no_crypto', __( 'This server cannot securely store the remote credential.', 'fleet-for-openstation' ) );
-		}
-
-		$nonce  = random_bytes( SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
-		$cipher = sodium_crypto_secretbox( $secret, $nonce, self::secret_key() );
-		return 'v1:' . base64_encode( $nonce . $cipher );
+	private static function read_cache_get( $site_id, $section ) {
+		$cached = get_transient( self::read_cache_key( $site_id, $section ) );
+		return is_array( $cached ) ? $cached : false;
 	}
 
 	/**
-	 * Decrypt a stored remote credential.
+	 * Cache only successful array models; errors should be retried immediately.
 	 *
-	 * @param string $sealed Sealed value.
-	 * @return string|WP_Error
+	 * @param string $site_id Site id.
+	 * @param string $section Tab section.
+	 * @param mixed  $result Response model.
+	 * @return mixed
 	 */
-	private static function open_secret( $sealed ) {
-		self::load_sodium();
-		if ( ! function_exists( 'sodium_crypto_secretbox_open' ) || 0 !== strpos( $sealed, 'v1:' ) ) {
-			return new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'fleet-for-openstation' ) );
+	private static function read_cache_set( $site_id, $section, $result ) {
+		if ( is_array( $result ) && ! self::contains_wp_error( $result ) ) {
+			set_transient( self::read_cache_key( $site_id, $section ), $result, 30 );
 		}
-
-		$payload = base64_decode( substr( $sealed, 3 ), true );
-		if ( false === $payload || strlen( $payload ) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES ) {
-			return new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'fleet-for-openstation' ) );
-		}
-
-		$nonce  = substr( $payload, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
-		$cipher = substr( $payload, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES );
-		$secret = sodium_crypto_secretbox_open( $cipher, $nonce, self::secret_key() );
-		return false === $secret
-			? new WP_Error( 'openstation_fleet_invalid_secret', __( 'The stored credential cannot be read. Reconnect this site.', 'fleet-for-openstation' ) )
-			: $secret;
+		return $result;
 	}
 
 	/**
-	 * Load WordPress's sodium compatibility layer if PHP lacks sodium.
+	 * Invalidate every managed tab after local or remote mutation.
+	 *
+	 * @param string $site_id Site id.
 	 */
-	private static function load_sodium() {
-		if ( ! function_exists( 'sodium_crypto_secretbox' ) ) {
-			$compat = ABSPATH . WPINC . '/sodium_compat/autoload.php';
-			if ( file_exists( $compat ) ) {
-				require_once $compat;
+	private static function invalidate_read_cache( $site_id ) {
+		foreach ( array( 'overview', 'content', 'media', 'comments', 'plugins', 'users', 'settings', 'design', 'api' ) as $section ) {
+			delete_transient( self::read_cache_key( $site_id, $section ) );
+		}
+	}
+
+	/**
+	 * Detect an error nested in a response model.
+	 *
+	 * @param mixed $value Candidate value.
+	 * @return bool
+	 */
+	private static function contains_wp_error( $value ) {
+		if ( is_wp_error( $value ) ) {
+			return true;
+		}
+		if ( ! is_array( $value ) ) {
+			return false;
+		}
+		foreach ( $value as $item ) {
+			if ( self::contains_wp_error( $item ) ) {
+				return true;
 			}
 		}
+		return false;
 	}
 
 	/**
-	 * Derive an encryption key from the site's authentication salt.
+	 * Build a user-scoped transient key below WordPress's key length limit.
 	 *
+	 * @param string $site_id Site id.
+	 * @param string $section Section.
 	 * @return string
 	 */
-	private static function secret_key() {
-		return hash_hmac( 'sha256', 'fleet-for-openstation', wp_salt( 'auth' ), true );
+	private static function read_cache_key( $site_id, $section ) {
+		return 'os_fleet_' . get_current_user_id() . '_' . substr( hash( 'sha256', sanitize_key( $site_id ) . ':' . sanitize_key( $section ) ), 0, 24 );
 	}
+
 	/**
-	 * Get current user's connected sites.
+	 * Fetch one compact connection directly.
 	 *
-	 * @return array
+	 * @param string $site_id Fleet site id.
 	 */
-	private static function get_sites() {
-		$sites = get_user_meta( get_current_user_id(), self::USER_META_SITES, true );
-		if ( ! is_array( $sites ) ) {
-			return array();
-		}
-		foreach ( $sites as $id => $site ) {
-			if ( is_array( $site ) ) {
-				$sites[ $id ] = self::normalize_site_record( $site );
-			}
-		}
-		return $sites;
+	private static function get_site( $site_id ) {
+		return OpenStation_Fleet_Repository::get( get_current_user_id(), $site_id, array( __CLASS__, 'normalize_site_record' ) );
+	}
+
+	/** Fetch only the current user's compact site id index. */
+	private static function get_site_ids() {
+		return OpenStation_Fleet_Repository::site_ids( get_current_user_id(), array( __CLASS__, 'normalize_site_record' ) );
+	}
+
+	/**
+	 * Fetch a connected site's separately persisted search state.
+	 *
+	 * @param string $site_id Fleet site id.
+	 * @param array  $site    Compact connection record.
+	 */
+	private static function get_site_search( $site_id, $site ) {
+		return OpenStation_Fleet_Repository::get_search_state(
+			get_current_user_id(),
+			$site_id,
+			isset( $site['connection_generation'] ) ? $site['connection_generation'] : '',
+			array( __CLASS__, 'normalize_site_record' )
+		);
+	}
+
+	/**
+	 * Persist a connected site's separately stored search state.
+	 *
+	 * @param string $site_id Fleet site id.
+	 * @param array  $site    Compact connection record.
+	 * @param array  $search  Search payload.
+	 */
+	private static function save_site_search( $site_id, $site, $search ) {
+		return OpenStation_Fleet_Repository::save_search_state(
+			get_current_user_id(),
+			$site_id,
+			isset( $site['connection_generation'] ) ? $site['connection_generation'] : '',
+			isset( $search['search_index_state'] ) ? $search['search_index_state'] : array(),
+			isset( $search['search_index'] ) ? $search['search_index'] : array(),
+			array( __CLASS__, 'normalize_site_record' ),
+			isset( $search['storage_revision'] ) ? (int) $search['storage_revision'] : 0
+		);
 	}
 
 	/**
@@ -1889,47 +2070,53 @@ final class OpenStation_Fleet {
 	 * @param string $site_id Site id.
 	 * @param array  $site    Site record.
 	 * @param array  $replace_fields Local fields intentionally changed by this request.
+	 * @param bool   $allow_create Whether a missing record may be created.
 	 * @return bool Whether the record was persisted.
 	 */
-	private static function save_site( $site_id, $site, $replace_fields = array() ) {
-		$site_id = sanitize_key( $site_id );
-		$site    = self::normalize_site_record( $site );
-		$replace_fields = array_values( array_intersect( array( 'agency', 'name' ), array_map( 'sanitize_key', (array) $replace_fields ) ) );
-		return self::mutate_user_meta(
-			self::USER_META_SITES,
-			static function ( $sites ) use ( $site_id, $site, $replace_fields ) {
-				$sites             = is_array( $sites ) ? $sites : array();
-				$next              = $site;
-				if ( isset( $sites[ $site_id ] ) && is_array( $sites[ $site_id ] ) ) {
-					$current = self::normalize_site_record( $sites[ $site_id ] );
-					foreach ( array( 'agency', 'name' ) as $field ) {
-						if ( ! in_array( $field, $replace_fields, true ) ) {
-							$next[ $field ] = $current[ $field ];
-						}
-					}
-				}
-				$sites[ $site_id ] = $next;
-				return $sites;
-			}
+	private static function save_site( $site_id, $site, $replace_fields = array(), $allow_create = false ) {
+		$replace_fields = array_values( array_unique( array_filter( array_map( 'sanitize_key', (array) $replace_fields ) ) ) );
+		return OpenStation_Fleet_Repository::save(
+			get_current_user_id(),
+			$site_id,
+			$site,
+			$replace_fields,
+			array( __CLASS__, 'normalize_site_record' ),
+			$allow_create
+		);
+	}
+
+	/**
+	 * Site fields owned by a remote status refresh.
+	 *
+	 * @return string[]
+	 */
+	private static function remote_state_fields() {
+		return array(
+			'capabilities',
+			'environment',
+			'health',
+			'health_checked',
+			'status_checked',
+			'metadata_checked',
+			'sync_failures',
+			'next_retry',
+			'inbox',
+			'wordpress_version',
+			'openstation',
+			'last_checked',
+			'error',
 		);
 	}
 
 	/**
 	 * Remove one connected site without replacing concurrent sibling changes.
 	 *
-	 * @param string $site_id Site id.
+	 * @param string $site_id    Site id.
+	 * @param string $generation Expected connection generation.
 	 * @return bool Whether the record was removed.
 	 */
-	private static function remove_site( $site_id ) {
-		$site_id = sanitize_key( $site_id );
-		return self::mutate_user_meta(
-			self::USER_META_SITES,
-			static function ( $sites ) use ( $site_id ) {
-				$sites = is_array( $sites ) ? $sites : array();
-				unset( $sites[ $site_id ] );
-				return $sites;
-			}
-		);
+	private static function remove_site( $site_id, $generation = '' ) {
+		return OpenStation_Fleet_Repository::remove( get_current_user_id(), $site_id, $generation );
 	}
 
 	/**
@@ -1950,9 +2137,7 @@ final class OpenStation_Fleet {
 			if ( false !== update_user_meta( $user_id, $key, $next, $current ) ) {
 				return true;
 			}
-			if ( function_exists( 'wp_cache_delete' ) ) {
-				wp_cache_delete( $user_id, 'user_meta' );
-			}
+			wp_cache_delete( $user_id, 'user_meta' );
 		}
 		return false;
 	}
@@ -1963,22 +2148,26 @@ final class OpenStation_Fleet {
 	 * @param array $site Stored site record.
 	 * @return array
 	 */
-	private static function normalize_site_record( $site ) {
-		$site = wp_parse_args(
+	public static function normalize_site_record( $site ) {
+		$site                       = wp_parse_args(
 			$site,
 			array(
-				'capabilities'      => array(),
-				'environment'       => array(),
-				'health'            => array(),
-				'health_checked'    => 0,
-				'inbox'             => self::empty_inbox_summary(),
-				'search_index'      => array(),
-				'wordpress_version' => '',
-				'agency'            => array(),
-				'setup_status'      => 'ready',
+				'capabilities'          => array(),
+				'environment'           => array(),
+				'health'                => array(),
+				'health_checked'        => 0,
+				'status_checked'        => 0,
+				'metadata_checked'      => 0,
+				'sync_failures'         => 0,
+				'next_retry'            => 0,
+				'inbox'                 => self::empty_inbox_summary(),
+				'wordpress_version'     => '',
+				'connection_generation' => '',
+				'agency'                => array(),
+				'setup_status'          => 'ready',
 			)
 		);
-		$site['agency'] = wp_parse_args(
+		$site['agency']             = wp_parse_args(
 			is_array( $site['agency'] ) ? $site['agency'] : array(),
 			array(
 				'client_name' => '',
@@ -1991,9 +2180,16 @@ final class OpenStation_Fleet {
 		$site['agency']['tags']     = is_array( $site['agency']['tags'] ) ? array_values( array_filter( array_map( 'sanitize_text_field', $site['agency']['tags'] ) ) ) : array();
 		$site['agency']['favorite'] = ! empty( $site['agency']['favorite'] );
 		$site['inbox']              = self::normalize_inbox_summary( $site['inbox'] );
-		$site['search_index']       = is_array( $site['search_index'] ) ? array_slice( $site['search_index'], 0, 24 ) : array();
-		$site['environment']        = is_array( $site['environment'] ) ? array_intersect_key( $site['environment'], array_flip( array( 'environment', 'php_version', 'db_server_info', 'wp_version' ) ) ) : array();
-		$site['environment']        = array_map( 'sanitize_text_field', $site['environment'] );
+		if ( '' === (string) $site['connection_generation'] && ! empty( $site['credential_uuid'] ) ) {
+			$site['connection_generation'] = sanitize_text_field( (string) $site['credential_uuid'] );
+		} else {
+			$site['connection_generation'] = sanitize_text_field( (string) $site['connection_generation'] );
+		}
+		foreach ( array( 'health_checked', 'status_checked', 'metadata_checked', 'sync_failures', 'next_retry' ) as $integer_key ) {
+			$site[ $integer_key ] = max( 0, (int) $site[ $integer_key ] );
+		}
+		$site['environment'] = is_array( $site['environment'] ) ? array_intersect_key( $site['environment'], array_flip( array( 'environment', 'php_version', 'db_server_info', 'wp_version' ) ) ) : array();
+		$site['environment'] = array_map( 'sanitize_text_field', $site['environment'] );
 		if (
 			! empty( $site['site_url'] )
 			&& ! empty( $site['rest_url'] )
@@ -2027,7 +2223,7 @@ final class OpenStation_Fleet {
 			'actor'     => wp_get_current_user()->display_name,
 		);
 		self::mutate_user_meta(
-			self::USER_META_EVENTS,
+			OpenStation_Fleet_Repository::activity_meta_key(),
 			static function ( $events ) use ( $event ) {
 				$events = is_array( $events ) ? $events : array();
 				array_unshift( $events, $event );
@@ -2042,7 +2238,7 @@ final class OpenStation_Fleet {
 	 * @return array
 	 */
 	private static function get_activity() {
-		$events = get_user_meta( get_current_user_id(), self::USER_META_EVENTS, true );
+		$events = get_user_meta( get_current_user_id(), OpenStation_Fleet_Repository::activity_meta_key(), true );
 		return is_array( $events ) ? array_slice( $events, 0, 100 ) : array();
 	}
 	/**
@@ -2051,10 +2247,10 @@ final class OpenStation_Fleet {
 	 * @return string
 	 */
 	private static function get_app_id() {
-		$app_id = get_user_meta( get_current_user_id(), self::USER_META_APP_ID, true );
+		$app_id = get_user_meta( get_current_user_id(), OpenStation_Fleet_Repository::app_id_meta_key(), true );
 		if ( ! wp_is_uuid( $app_id ) ) {
 			$app_id = wp_generate_uuid4();
-			update_user_meta( get_current_user_id(), self::USER_META_APP_ID, $app_id );
+			update_user_meta( get_current_user_id(), OpenStation_Fleet_Repository::app_id_meta_key(), $app_id );
 		}
 		return $app_id;
 	}
@@ -2141,10 +2337,7 @@ final class OpenStation_Fleet {
 	 * Return from WordPress's external authorization screen to OpenStation.
 	 */
 	private static function return_to_openstation() {
-		$target = function_exists( 'openstation_shell_url' )
-			? openstation_shell_url()
-			: admin_url( 'plugins.php' );
-		wp_safe_redirect( $target );
+		wp_safe_redirect( openstation_shell_url() );
 		exit;
 	}
 
@@ -2154,21 +2347,34 @@ final class OpenStation_Fleet {
 	 * @param string $code Fixed error code.
 	 */
 	private static function fail_authorization( $code ) {
-		$messages = array(
-			'authorization_failed'   => __( 'The authorization response was invalid. Start the connection again from Fleet.', 'fleet-for-openstation' ),
-			'authorization_expired'  => __( 'The authorization attempt expired. Start the connection again from Fleet.', 'fleet-for-openstation' ),
-			'authorization_rejected' => __( 'The site connection was not approved.', 'fleet-for-openstation' ),
-			'encryption_failed'      => __( 'This server could not securely store the WordPress credential.', 'fleet-for-openstation' ),
-			'credential_failed'      => __( 'WordPress issued a credential, but Fleet could not verify it. Revoke the Fleet credential under Users → Profile → Application Passwords on the managed site, then check whether its server forwards Authorization headers.', 'fleet-for-openstation' ),
-			'administrator_required' => __( 'Fleet needs an administrator connection to manage the full WordPress site. The new credential was revoked; reconnect while signed in as an administrator.', 'fleet-for-openstation' ),
-			'storage_failed'         => __( 'Fleet could not save the connection, so it revoked the new WordPress credential. Start the connection again.', 'fleet-for-openstation' ),
-		);
-		$message = isset( $messages[ $code ] ) ? $messages[ $code ] : $messages['authorization_failed'];
-		$target  = function_exists( 'openstation_shell_url' ) ? openstation_shell_url() : admin_url( 'plugins.php' );
+		$message = self::authorization_failure_message( $code );
+		$target  = openstation_shell_url();
 		wp_die(
 			wp_kses_post( '<p>' . esc_html( $message ) . '</p><p><a class="button button-primary" href="' . esc_url( $target ) . '">' . esc_html__( 'Return to OpenStation', 'fleet-for-openstation' ) . '</a></p>' ),
 			esc_html__( 'Fleet could not connect the site', 'fleet-for-openstation' ),
 			array( 'response' => 400 )
 		);
+	}
+
+	/**
+	 * Return truthful cleanup guidance for an authorization failure.
+	 *
+	 * @param string $code Fixed error code.
+	 * @return string User-facing failure guidance.
+	 */
+	private static function authorization_failure_message( $code ) {
+		$messages = array(
+			'authorization_failed'        => __( 'The authorization response was invalid. Start the connection again from Fleet.', 'fleet-for-openstation' ),
+			'authorization_expired'       => __( 'The authorization attempt expired. Start the connection again from Fleet.', 'fleet-for-openstation' ),
+			'authorization_rejected'      => __( 'The site connection was not approved.', 'fleet-for-openstation' ),
+			'encryption_failed'           => __( 'This server could not securely store the new WordPress credential. Fleet could not confirm automatic cleanup, so revoke the Fleet credential under Users → Profile → Application Passwords on the managed site before trying again.', 'fleet-for-openstation' ),
+			'credential_failed'           => __( 'WordPress issued a credential, but Fleet could not verify it. Revoke the Fleet credential under Users → Profile → Application Passwords on the managed site, then check whether its server forwards Authorization headers.', 'fleet-for-openstation' ),
+			'administrator_required'      => __( 'Fleet needs an administrator connection to manage the full WordPress site. The new credential was revoked; reconnect while signed in as an administrator.', 'fleet-for-openstation' ),
+			'administrator_revoke_failed' => __( 'Fleet needs an administrator connection, and WordPress did not confirm cleanup of the new credential. Revoke the Fleet credential under Users → Profile → Application Passwords on the managed site before reconnecting as an administrator.', 'fleet-for-openstation' ),
+			'duplicate_revoke_failed'     => __( 'That site is already connected, but WordPress did not confirm cleanup of the extra credential. Revoke the newest Fleet credential under Users → Profile → Application Passwords on the managed site.', 'fleet-for-openstation' ),
+			'storage_failed'              => __( 'Fleet could not save the connection, so it revoked the new WordPress credential. Start the connection again.', 'fleet-for-openstation' ),
+			'storage_revoke_failed'       => __( 'Fleet could not save the connection, and WordPress did not confirm cleanup of the new credential. Revoke the Fleet credential under Users → Profile → Application Passwords on the managed site before trying again.', 'fleet-for-openstation' ),
+		);
+		return isset( $messages[ $code ] ) ? $messages[ $code ] : $messages['authorization_failed'];
 	}
 }

@@ -16,9 +16,11 @@ Fleet gives that work one home without turning your sites into a Multisite netwo
 
 ## The work comes to you
 
-Fleet Inbox brings pending comments, drafts, posts awaiting review, scheduled work, connection problems, and useful Site Health findings into one queue. Search helps you find recent content, media, comments, and people across the secure index Fleet refreshes during site checks.
+Fleet Inbox brings pending comments, drafts, posts awaiting review, scheduled work, connection problems, and useful Site Health findings into one queue. Search helps you find content, media, comments, and people across a secure index Fleet updates incrementally in the background.
 
 Instead of visiting every dashboard to look for work, open Fleet and start with the work that already found you.
+
+Large fleets stay responsive because Fleet checks sites in short, resumable passes. Fast status checks stay frequent, heavier metadata and search work runs less often, and unavailable sites automatically back off until they recover.
 
 ![Fleet Inbox showing editorial and moderation work across Harbor Arts](assets/screenshots/fleet-inbox.jpg)
 

@@ -15,6 +15,6 @@ parameters:
     excludePaths:
         analyse:
             - vendor
-            - dist
+            - dist (?)
     reportUnmatchedIgnoredErrors: true
     treatPhpDocTypesAsCertain: false

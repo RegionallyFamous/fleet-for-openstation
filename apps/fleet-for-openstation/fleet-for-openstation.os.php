@@ -21,11 +21,13 @@ $openstation_fleet_app = App::define( 'fleet-for-openstation' )
 	->placement( 'dock' )
 	->dock_order( 58 )
 	->capabilities( OpenStation_Fleet::CAPABILITY )
+	->watch( 'fleet' )
 	->style( OPENSTATION_FLEET_DIR . 'assets/fleet-app.css' )
 	->state(
 		array(
-			'query'  => '',
-			'notice' => '',
+			'query'      => '',
+			'notice'     => '',
+			'connection' => array(),
 		)
 	)
 	->mount(
@@ -81,6 +83,13 @@ $openstation_fleet_app = App::define( 'fleet-for-openstation' )
 		)
 	)
 	->tab(
+		'support',
+		array(
+			'label' => __( 'Support', 'fleet-for-openstation' ),
+			'view'  => array( 'OpenStation_Fleet_App', 'render_support' ),
+		)
+	)
+	->tab(
 		'activity',
 		array(
 			'label' => __( 'Activity', 'fleet-for-openstation' ),
@@ -90,7 +99,7 @@ $openstation_fleet_app = App::define( 'fleet-for-openstation' )
 		)
 	);
 
-foreach ( array( 'connect', 'search', 'open-site', 'open-workspace', 'refresh-site', 'favorite', 'install', 'disconnect' ) as $openstation_fleet_action ) {
+foreach ( array( 'connect', 'authorize', 'cancel-connect', 'search', 'open-site', 'open-workspace', 'refresh-site', 'favorite', 'install', 'disconnect' ) as $openstation_fleet_action ) {
 	$openstation_fleet_app->action(
 		$openstation_fleet_action,
 		static function ( State $state, Os $os, array $args ) use ( $openstation_fleet_action ) {

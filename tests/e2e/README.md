@@ -23,7 +23,9 @@ npm run test:e2e
 
 The harness requires WP-CLI, HTTPS URLs, active `desktop-mode` and `fleet-for-openstation` plugins on the hub, and two reachable connected sites. It generates short-lived WordPress authentication cookies in memory with WP-CLI. Passwords, Application Passwords, cookies, and browser storage state are never written to the repository or test report.
 
-The suite is read-only at the WordPress content/API level. Fixture discovery uses Fleet's repository, which may perform Fleet's supported one-time metadata migration. Opening and focusing windows can update that test user's OpenStation session, so use a dedicated local test fleet rather than production.
+The default suite does not write remote content. Explicit `FLEET_E2E_WRITES=1` plus `FLEET_E2E_MANAGED_PATH=/absolute/disposable-managed-site` enables credential, content, timezone, publishing/recovery, and saved-view round trips with scoped cleanup. These tests create temporary users/posts/views and must never run against production. Fixture discovery can perform Fleet's metadata migration; window operations update the test user's OpenStation session.
+
+For the custom-type case, copy `tests/e2e/fixtures/custom-types.php` to the opted-in target's `wp-content/mu-plugins/fleet-modern-test-types.php`. It remains inert outside a test run. The test enables its Core-generated type routes, verifies a custom namespace and a restricted type, then removes its content and enable flag. This fixture is never packaged in Fleet. Without it that one case is explicitly skipped.
 
 ## CI behavior
 

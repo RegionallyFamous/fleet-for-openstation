@@ -30,9 +30,17 @@ $openstation_fleet_site_app = App::define( 'fleet-site' )
 	->style( OPENSTATION_FLEET_DIR . 'assets/fleet-app.css' )
 	->state(
 		array(
-			'site_id'  => '',
-			'notice'   => '',
-			'response' => '',
+			'site_id'     => '',
+			'notice'      => '',
+			'response'    => '',
+			'collections' => array(),
+			'views_open'  => false,
+			'editor'      => array(),
+			'review'      => array(),
+			'history'     => array(),
+			'revision'    => array(),
+			'connection'  => array(),
+			'saved'       => '',
 		)
 	)
 	->mount( array( 'OpenStation_Fleet_App', 'mount_site' ) )
@@ -59,6 +67,14 @@ $openstation_fleet_site_app = App::define( 'fleet-site' )
 			'label'  => __( 'Visit site', 'fleet-for-openstation' ),
 			'icon'   => 'dashicons-external',
 			'action' => 'open-site-url',
+		)
+	)
+	->window_action(
+		'reconnect',
+		array(
+			'label'  => __( 'Repair connection', 'fleet-for-openstation' ),
+			'icon'   => 'dashicons-admin-links',
+			'action' => 'reconnect',
 		)
 	)
 	->window_action(
@@ -148,7 +164,7 @@ $openstation_fleet_site_app = App::define( 'fleet-site' )
 		)
 	);
 
-foreach ( array( 'open-hub', 'open-site-url', 'refresh', 'finish-setup', 'install-openstation', 'save-content', 'save-comment', 'save-media', 'save-settings', 'save-agency', 'change-plugin', 'install-plugin', 'create-user', 'save-user', 'api-request', 'disconnect' ) as $openstation_fleet_site_action ) {
+foreach ( array( 'save-view', 'apply-view', 'delete-view', 'review-content', 'confirm-content', 'cancel-review', 'revision-history', 'preview-revision', 'use-revision', 'close-history', 'reconnect', 'authorize', 'cancel-connect', 'browse', 'edit-content', 'new-content', 'close-editor', 'trash-content', 'open-hub', 'open-site-url', 'refresh', 'finish-setup', 'install-openstation', 'save-content', 'save-comment', 'save-media', 'save-settings', 'save-agency', 'change-plugin', 'install-plugin', 'create-user', 'save-user', 'api-request', 'disconnect' ) as $openstation_fleet_site_action ) {
 	$openstation_fleet_site_app->action(
 		$openstation_fleet_site_action,
 		static function ( State $state, Os $os, array $args ) use ( $openstation_fleet_site_action ) {

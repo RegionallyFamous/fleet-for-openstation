@@ -6,6 +6,7 @@ const hubPath = process.env.FLEET_E2E_HUB_PATH;
 function runWp( args ) {
 	return execFileSync( 'wp', [ `--path=${ hubPath }`, ...args ], {
 		encoding: 'utf8',
+		timeout: 60_000,
 		stdio: [ 'ignore', 'pipe', 'pipe' ],
 		env: {
 			...process.env,
@@ -131,10 +132,23 @@ function loadWordPressFixture() {
 	const fleet = discoverFleet();
 	return {
 		hubUrl,
+		userId: fleet.user_id,
 		sites: fleet.sites,
 		migration: fleet.migration,
 		cookies: authenticationCookies( fleet.user_id, hubUrl ),
 	};
 }
 
-module.exports = { loadWordPressFixture };
+function runSiteWp( sitePath, php ) {
+	if ( ! sitePath ) {
+		throw new Error( 'An explicit local fixture path is required for write tests.' );
+	}
+	const output = execFileSync( 'wp', [ `--path=${ sitePath }`, 'eval', php ], {
+		encoding: 'utf8', stdio: [ 'ignore', 'pipe', 'pipe' ],
+		timeout: 60_000,
+		env: { ...process.env, WP_CLI_PHP_ARGS: '-d error_reporting=24575' },
+	} );
+	return parseMarkedJson( output );
+}
+
+module.exports = { loadWordPressFixture, runSiteWp };

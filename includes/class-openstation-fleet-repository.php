@@ -172,6 +172,7 @@ final class OpenStation_Fleet_Repository {
 			} elseif ( $allow_create ) {
 				return false;
 			} else {
+				$stored_current     = $current;
 				$current            = self::compact( $current, $normalizer );
 				$current_generation = (string) $current['connection_generation'];
 				$next_generation    = (string) $incoming['connection_generation'];
@@ -184,7 +185,7 @@ final class OpenStation_Fleet_Repository {
 						$next[ $field ] = $incoming[ $field ];
 					}
 				}
-				if ( $current !== $next && false === update_user_meta( $user_id, $key, $next, $current ) ) {
+				if ( $current !== $next && false === update_user_meta( $user_id, $key, $next, $stored_current ) ) {
 					return false;
 				}
 			}
@@ -195,6 +196,40 @@ final class OpenStation_Fleet_Repository {
 				delete_user_meta( $user_id, $key, $incoming );
 			}
 			return $indexed;
+		} finally {
+			self::release_lock( $lock );
+		}
+	}
+
+	/**
+	 * Replace a verified credential without dropping agency data or a newer connection.
+	 *
+	 * @param int      $user_id WordPress user id.
+	 * @param string   $site_id Site id.
+	 * @param string   $generation Expected old generation.
+	 * @param array    $site Verified replacement.
+	 * @param callable $normalizer Record normalizer.
+	 * @return bool
+	 */
+	public static function reauthorize( $user_id, $site_id, $generation, $site, $normalizer ) {
+		$lock = self::acquire_lock( 'user', $user_id );
+		if ( false === $lock ) {
+			return false;
+		}
+		try {
+			$key     = self::site_key( sanitize_key( $site_id ) );
+			$current = get_user_meta( $user_id, $key, true );
+			if ( ! is_array( $current ) || empty( $current['connection_generation'] ) || ! hash_equals( (string) $current['connection_generation'], (string) $generation ) ) {
+				return false;
+			}
+			$site['agency'] = isset( $current['agency'] ) ? $current['agency'] : array();
+			$site['views']  = isset( $current['views'] ) ? $current['views'] : array();
+			$next           = self::compact( $site, $normalizer );
+			if ( false === update_user_meta( $user_id, $key, $next, $current ) ) {
+				return false;
+			}
+			delete_option( self::search_option_key( $user_id, $site_id ) );
+			return true;
 		} finally {
 			self::release_lock( $lock );
 		}
@@ -675,7 +710,7 @@ final class OpenStation_Fleet_Repository {
 	 * adopts it. This avoids assuming that the network main site was the hub.
 	 */
 	private static function may_migrate_unscoped() {
-		if ( ! function_exists( 'is_multisite' ) || ! is_multisite() ) {
+		if ( ! is_multisite() ) {
 			return true;
 		}
 		$blog_id      = self::blog_id();
@@ -754,7 +789,7 @@ final class OpenStation_Fleet_Repository {
 
 	/** Return the positive current hub blog id used in scoped keys. */
 	private static function blog_id() {
-		$blog_id = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 1;
+		$blog_id = (int) get_current_blog_id();
 		return max( 1, $blog_id );
 	}
 }

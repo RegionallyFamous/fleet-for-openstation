@@ -50,6 +50,9 @@ final class OpenStation_Fleet_REST_Client {
 
 		$total_pages = (int) wp_remote_retrieve_header( $response, 'x-wp-totalpages' );
 		$envelope    = array( 'items' => $items );
+		if ( '' !== wp_remote_retrieve_header( $response, 'x-wp-total' ) ) {
+			$envelope['total'] = max( 0, (int) wp_remote_retrieve_header( $response, 'x-wp-total' ) );
+		}
 		if ( $total_pages >= 0 && '' !== wp_remote_retrieve_header( $response, 'x-wp-totalpages' ) ) {
 			$envelope['total_pages'] = $total_pages;
 		}

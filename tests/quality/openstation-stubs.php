@@ -32,6 +32,7 @@ final class App {
 	public function tab( string $id, array $config ): self {}
 	public function action( string $id, callable $callback ): self {}
 	public function dock_order( int $order ): self {}
+	public function watch( string ...$types ): self {}
 }
 
 namespace OpenStation\App;
@@ -59,6 +60,8 @@ final class Os {
 	public function open( string $app_id, array $args = array() ): void {}
 	public function open_url( string $url, string $title = '' ): void {}
 	public function close(): void {}
+	public function announce( string $type, string $action, $ids ): self {}
+	public static function page( array $items, $total, $page, $per_page ): array {}
 }
 
 /** Effect queue exposed by the OpenStation host bridge. */

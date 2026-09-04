@@ -33,6 +33,9 @@ final class OpenStation_Fleet_Sync_Policy {
 		if ( ! empty( $site['next_retry'] ) && (int) $site['next_retry'] > $now ) {
 			return false;
 		}
+		if ( 'health' === $tier && ! empty( $site['health_error'] ) ) {
+			return empty( $site['health_attempted'] ) || (int) $site['health_attempted'] <= $now - self::STATUS_INTERVAL;
+		}
 		$map = array(
 			'status'   => array( 'status_checked', self::STATUS_INTERVAL ),
 			'metadata' => array( 'metadata_checked', self::METADATA_INTERVAL ),

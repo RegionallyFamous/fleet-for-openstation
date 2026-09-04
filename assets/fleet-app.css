@@ -1,4 +1,66 @@
 /* Fleet composes OpenStation components into a compact agency operations surface. */
+.fleet-native-content-list,
+.fleet-native-editor,
+.fleet-native-filters,
+.fleet-native-pagination,
+.fleet-native-connection-review,
+.fleet-native-editor-help,
+.fleet-native-publish-review,
+.fleet-native-revisions,
+.fleet-native-saved-views {
+	box-sizing: border-box;
+	width: min(100%, 880px);
+	margin: 16px auto;
+}
+.fleet-native-content-list {
+	border: 1px solid var(--os-ui-border, #dcdcde);
+	border-radius: 12px;
+	overflow: hidden;
+}
+
+.fleet-native-filters { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.fleet-native-filters::part(header) { display: none; }
+.fleet-native-filters::part(fields) { margin: 0; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); align-items: end; gap: 12px; }
+.fleet-native-filters::part(footer) { margin: 0; border: 0; padding: 0; min-height: 0; }
+.fleet-native-editor-meta { display: grid; grid-template-columns: 1fr 1fr; align-items: end; gap: 16px; }
+.fleet-native-editor::part(header) { display: none; }
+.fleet-native-editor::part(fields) { gap: 12px; margin-bottom: 12px; }
+.fleet-native-editor::part(footer) { padding-top: 10px; }
+.fleet-native-editor os-textarea[name="content"],
+.fleet-native-editor os-textarea[name="excerpt"] { font-family: var(--os-ui-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace); }
+.fleet-native-editor-help,
+.fleet-native-save-state { color: var(--os-ui-fg-muted, #646970); font-size: 12px; line-height: 1.6; }
+.fleet-native-editor-details summary { cursor: pointer; padding-block: 10px; font-size: 13px; }
+.fleet-native-editor-details os-text-field,
+.fleet-native-editor-details os-textarea { display: block; margin-bottom: 12px; }
+.fleet-native-pagination { display: flex; justify-content: space-between; align-items: center; gap: 16px; color: var(--os-ui-fg-muted, #646970); font-size: 12px; }
+.fleet-native-pagination > span:last-child,
+.fleet-native-review-actions { display: flex; align-items: center; gap: 10px; }
+.fleet-native-connection-review { max-width: 680px; padding: 24px; border: 1px solid var(--os-ui-border, #dcdcde); border-radius: 14px; }
+.fleet-native-connection-review h2 { margin: 16px 0 4px; font-size: 24px; }
+.fleet-native-connection-review p { overflow-wrap: anywhere; color: var(--os-ui-fg-muted, #646970); }
+.fleet-native-connection-review ol { padding-inline-start: 22px; }
+.fleet-native-connection-review li { margin: 16px 0; line-height: 1.6; }
+.fleet-native-review-actions { margin-top: 22px; }
+
+.fleet-native-review-summary { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.5fr); gap: 16px; padding: 16px; border: 1px solid var(--os-ui-border, #ddd); border-radius: 8px; }
+.fleet-native-review-summary dt { font-size: 12px; margin-bottom: 6px; opacity: .7; }
+.fleet-native-review-summary dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.fleet-native-diff { margin-block: 12px; border: 1px solid var(--os-ui-border, #ddd); border-radius: 6px; overflow: hidden; }
+.fleet-native-diff summary { padding: 10px 12px; cursor: pointer; font-weight: 600; }
+.fleet-native-diff table { width: 100%; table-layout: fixed; border-collapse: collapse; font: 12px/1.6 var(--os-ui-font-mono, monospace); }
+.fleet-native-diff td, .fleet-native-diff th { padding: 8px; vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+.fleet-native-diff table.diff td.diff-addedline { background: color-mix(in srgb, #218145 18%, transparent); color: var(--os-ui-fg, inherit); }
+.fleet-native-diff table.diff td.diff-deletedline { background: color-mix(in srgb, #b33030 16%, transparent); color: var(--os-ui-fg, inherit); }
+.fleet-native-diff table.diff td.diff-addedline ins, .fleet-native-diff table.diff td.diff-deletedline del { background: transparent; color: inherit; font-weight: 600; }
+.fleet-native-diff-long { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; }
+.fleet-native-diff-long pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; }
+.fleet-native-saved-views { margin-block: 8px 20px; border-bottom: 1px solid var(--os-ui-border, #ddd); padding-bottom: 10px; }
+.fleet-native-saved-views summary { cursor: pointer; font-size: 13px; font-weight: 600; padding-block: 8px; }
+.fleet-native-saved-views p { font-size: 13px; }
+.fleet-native-saved-views os-form { max-width: 420px; }
+.fleet-native-review-actions { flex-wrap: wrap; }
+
 :where(
 	.fleet-native-hero,
 	.fleet-native-site-header,

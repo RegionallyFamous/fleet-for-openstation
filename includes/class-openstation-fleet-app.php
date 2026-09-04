@@ -41,6 +41,9 @@ final class OpenStation_Fleet_App {
 	public static function hub_action( $action, $state, $os, $args ) {
 		$values = self::values( $args );
 		$state->set( 'notice', '' );
+		if ( self::connection_action( $action, $state, $os ) ) {
+			return;
+		}
 
 		if ( 'connect' === $action ) {
 			$result = OpenStation_Fleet::app_connect( isset( $values['site_url'] ) ? $values['site_url'] : '' );
@@ -53,7 +56,7 @@ final class OpenStation_Fleet_App {
 				$os->toast( __( 'That site is already connected.', 'fleet-for-openstation' ) );
 				return;
 			}
-			$os->effects->add( 'fleet-authorize', array( 'url' => esc_url_raw( $result['authorization_url'] ) ) );
+			$state->set( 'connection', $result );
 			return;
 		}
 
@@ -108,6 +111,156 @@ final class OpenStation_Fleet_App {
 	public static function site_action( $action, $state, $os, $args ) {
 		$id = sanitize_key( (string) $state->get( 'site_id' ) );
 		$state->set( 'notice', '' );
+		$state->set( 'saved', '' );
+		if ( self::connection_action( $action, $state, $os ) ) {
+			return;
+		}
+		if ( 'reconnect' === $action ) {
+			$site   = OpenStation_Fleet::app_site( $id );
+			$result = is_wp_error( $site ) ? $site : OpenStation_Fleet::app_connect( $site['url'], true );
+			$state->set( is_wp_error( $result ) ? 'notice' : 'connection', is_wp_error( $result ) ? $result->get_error_message() : $result );
+			return;
+		}
+		$values = array_merge( self::values( $args ), $args );
+		unset( $values['values'] );
+		if ( in_array( $action, array( 'save-view', 'apply-view', 'delete-view' ), true ) ) {
+			$state->set( 'views_open', true );
+			$collections = (array) $state->get( 'collections' );
+			$options     = isset( $collections['content'] ) ? $collections['content'] : array();
+			$views       = OpenStation_Fleet::work_views( $id, 'apply-view' === $action ? 'read' : ( 'save-view' === $action ? 'save' : 'delete' ), array_merge( $options, $values ) );
+			if ( is_wp_error( $views ) ) {
+				$state->set( 'notice', $views->get_error_message() );
+			} elseif ( 'apply-view' === $action ) {
+				$key = isset( $values['view_id'] ) ? $values['view_id'] : '';
+				if ( isset( $views[ $key ] ) ) {
+					$collections['content'] = array_merge( $views[ $key ], array( 'page' => 1 ) );
+					$state->set( 'collections', $collections );
+				}
+			} else {
+				$state->set( 'saved', __( 'Saved views updated for this site.', 'fleet-for-openstation' ) );
+			}
+			return;
+		}
+		if ( in_array( $action, array( 'cancel-review', 'close-history' ), true ) ) {
+			$state->set( 'review', array() );
+			$state->set( 'history', array() );
+			$state->set( 'revision', array() );
+			return;
+		}
+		if ( 'revision-history' === $action ) {
+			$page   = max( 1, isset( $values['page'] ) ? absint( $values['page'] ) : 1 );
+			$result = OpenStation_Fleet::content_revisions( $id, (array) $state->get( 'editor' ), 0, $page );
+			if ( is_wp_error( $result ) ) {
+				$state->set( 'notice', $result->get_error_message() );
+			} else {
+				$result['page'] = $page;
+				$state->set( 'history', $result );
+			}
+			return;
+		}
+		if ( 'preview-revision' === $action || 'use-revision' === $action ) {
+			$editor            = (array) $state->get( 'editor' );
+			$selected_revision = (array) $state->get( 'revision' );
+			$revision_id       = 'use-revision' === $action ? absint( isset( $selected_revision['id'] ) ? $selected_revision['id'] : 0 ) : absint( isset( $values['revision_id'] ) ? $values['revision_id'] : 0 );
+			$result            = OpenStation_Fleet::content_revisions( $id, $editor, $revision_id );
+			if ( ! $revision_id || is_wp_error( $result ) ) {
+				$state->set( 'notice', is_wp_error( $result ) ? $result->get_error_message() : __( 'Choose a revision.', 'fleet-for-openstation' ) );
+				return;
+			}
+			if ( 'preview-revision' === $action ) {
+				$state->set( 'revision', $result );
+			} else {
+				$fields = OpenStation_Fleet_Content::editable( $result );
+				foreach ( array( 'title', 'content', 'excerpt' ) as $field ) {
+					$editor[ $field ] = $fields[ $field ];
+				}
+				$state->set( 'editor', $editor );
+				$state->set( 'history', array() );
+				$state->set( 'revision', array() );
+				$os->effects->add( 'fleet-editor-dirty', array() );
+				$os->toast( __( 'Revision loaded into the editor. Nothing has been saved yet.', 'fleet-for-openstation' ) );
+			}
+			return;
+		}
+		$confirming = 'confirm-content' === $action;
+		if ( $confirming ) {
+			$review = (array) $state->get( 'review' );
+			$values = array_merge(
+				(array) $state->get( 'editor' ),
+				array(
+					'review_token'   => isset( $review['token'] ) ? $review['token'] : '',
+					'review_expires' => isset( $review['expires'] ) ? $review['expires'] : 0,
+				)
+			);
+			$args   = $values;
+			$action = 'save-content';
+		}
+		if ( 'save-content' === $action && ! $confirming ) {
+			$editor = (array) $state->get( 'editor' );
+			foreach ( array_keys( $editor ) as $key ) {
+				if ( isset( $values[ $key ] ) && is_string( $values[ $key ] ) && strlen( $values[ $key ] ) <= 200000 ) {
+					$editor[ $key ] = $values[ $key ];
+				}
+			}
+			$state->set( 'editor', $editor );
+			if ( in_array( isset( $values['status'] ) ? $values['status'] : '', array( 'publish', 'future' ), true ) || in_array( isset( $editor['original_status'] ) ? $editor['original_status'] : '', array( 'publish', 'future' ), true ) ) {
+				$result = OpenStation_Fleet::content_review( $id, $values );
+				$state->set( is_wp_error( $result ) ? 'notice' : 'review', is_wp_error( $result ) ? $result->get_error_message() : $result );
+				return;
+			}
+		}
+		if ( 'browse' === $action ) {
+			$section = isset( $values['section'] ) ? sanitize_key( $values['section'] ) : 'content';
+			if ( in_array( $section, array( 'content', 'comments', 'media', 'users' ), true ) ) {
+				$collections             = (array) $state->get( 'collections' );
+				$previous                = isset( $collections[ $section ] ) && is_array( $collections[ $section ] ) ? $collections[ $section ] : array();
+				$collections[ $section ] = array_merge( $previous, array_intersect_key( $values, array_flip( array( 'type', 'page', 'search', 'status', 'period' ) ) ) );
+				$state->set( 'collections', $collections );
+			}
+			return;
+		}
+		if ( in_array( $action, array( 'new-content', 'edit-content', 'close-editor' ), true ) ) {
+			$editor = array();
+			if ( 'close-editor' !== $action ) {
+				$type  = isset( $values['type'] ) ? sanitize_key( $values['type'] ) : 'posts';
+				$types = OpenStation_Fleet::app_site_data( $id, 'content-types' );
+				if ( is_wp_error( $types ) || ! isset( $types[ $type ] ) ) {
+					$state->set( 'notice', __( 'That content type is unavailable.', 'fleet-for-openstation' ) );
+					return;
+				}
+				$row      = isset( $values['row'] ) && is_array( $values['row'] ) ? $values['row'] : array();
+				$selected = 'new-content' === $action ? 0 : absint( isset( $row['id'] ) ? $row['id'] : 0 );
+				$item     = $selected ? OpenStation_Fleet::app_site_data(
+					$id,
+					'content',
+					array(
+						'type'     => $type,
+						'selected' => $selected,
+					)
+				) : array( 'item' => array() );
+				if ( is_wp_error( $item ) ) {
+					$state->set( 'notice', $item->get_error_message() );
+					return;
+				}
+				$editor = array_merge(
+					OpenStation_Fleet_Content::editable( $item['item'] ),
+					array(
+						'content_type'    => $type,
+						'content_id'      => $selected,
+						'fingerprint'     => $selected ? OpenStation_Fleet_Content::fingerprint( $item['item'] ) : '',
+						'request_id'      => wp_generate_uuid4(),
+						'original_status' => isset( $item['item']['status'] ) ? $item['item']['status'] : 'draft',
+						'descriptor'      => $types[ $type ],
+					)
+				);
+			}
+			$state->set( 'editor', $editor );
+			$state->set( 'review', array() );
+			$state->set( 'history', array() );
+			$state->set( 'revision', array() );
+			$os->effects->add( 'fleet-editor-clean', array() );
+			return;
+		}
 		if ( 'open-hub' === $action ) {
 			$os->open( 'fleet-for-openstation' );
 			return;
@@ -125,6 +278,7 @@ final class OpenStation_Fleet_App {
 			'finish-setup'        => 'finish-setup',
 			'install-openstation' => 'install-openstation',
 			'save-content'        => 'content',
+			'trash-content'       => 'trash-content',
 			'save-comment'        => 'comment',
 			'save-media'          => 'media',
 			'save-settings'       => 'settings',
@@ -144,9 +298,25 @@ final class OpenStation_Fleet_App {
 		unset( $values['values'] );
 		$result = OpenStation_Fleet::app_action( $id, $map[ $action ], $values );
 		if ( is_wp_error( $result ) ) {
+			if ( 'save-content' === $action ) {
+				$editor = (array) $state->get( 'editor' );
+				foreach ( array_keys( $editor ) as $key ) {
+					if ( isset( $values[ $key ] ) && is_string( $values[ $key ] ) && strlen( $values[ $key ] ) <= 200000 ) {
+						$editor[ $key ] = $values[ $key ];
+					}
+				}
+				$state->set( 'editor', $editor );
+			}
 			$state->set( 'notice', $result->get_error_message() );
 			return;
 		}
+		if ( 'save-content' === $action || 'trash-content' === $action ) {
+			$state->set( 'editor', array() );
+			$state->set( 'review', array() );
+			$os->effects->add( 'fleet-editor-clean', array() );
+		}
+		$state->set( 'saved', isset( $result['message'] ) ? $result['message'] : '' );
+		$os->announce( 'fleet', 'updated', array() );
 		if ( 'api-request' === $action ) {
 			$payload = isset( $result['data'] ) ? $result['data'] : array();
 			$json    = wp_json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
@@ -164,6 +334,17 @@ final class OpenStation_Fleet_App {
 		$os->toast( isset( $result['message'] ) && $result['message'] ? $result['message'] : __( 'Changes saved.', 'fleet-for-openstation' ) );
 	}
 
+	/** Render local, explicitly redacted support information. */
+	public static function render_support() {
+		$report = wp_json_encode( OpenStation_Fleet::diagnostics(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
+		?>
+		<div class="fleet-native-section-heading"><span><small><?php echo self::e( __( 'Help and compatibility', 'fleet-for-openstation' ) ); ?></small><h2><?php echo self::e( __( 'Keep Fleet running', 'fleet-for-openstation' ) ); ?></h2></span></div>
+		<section class="fleet-native-panel"><header><h3><?php echo self::e( __( 'Before sharing a report', 'fleet-for-openstation' ) ); ?></h3></header><p class="fleet-native-empty-row"><?php echo self::e( __( 'This report includes only versions, readiness checks and counts. It excludes site addresses, people, notes, credentials and error bodies. Nothing is sent automatically. Review it before sharing.', 'fleet-for-openstation' ) ); ?></p>
+		<os-textarea label="<?php echo self::e( __( 'Redacted support report', 'fleet-for-openstation' ) ); ?>" rows="15" readonly value="<?php echo self::e( $report ); ?>"></os-textarea></section>
+		<section class="fleet-native-panel"><header><h3><?php echo self::e( __( 'Troubleshooting', 'fleet-for-openstation' ) ); ?></h3></header><p class="fleet-native-empty-row"><?php echo self::e( __( 'Access revoked? Use Repair connection from the site window. Installation blocked? Fix the host permissions and retry Finish setup. Checks delayed? Verify WordPress cron or your host’s scheduled cron job.', 'fleet-for-openstation' ) ); ?></p><p class="fleet-native-empty-row"><a href="https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Troubleshooting" target="_blank" rel="noopener noreferrer"><?php echo self::e( __( 'Read the troubleshooting guide', 'fleet-for-openstation' ) ); ?></a></p></section>
+		<?php
+	}
+
 	/**
 	 * Render the hub's Sites tab.
 	 *
@@ -172,6 +353,9 @@ final class OpenStation_Fleet_App {
 	public static function render_sites( $state ) {
 		$data = OpenStation_Fleet::app_hub_data( 'sites' );
 		self::hub_header( $data, $state, __( 'Your sites', 'fleet-for-openstation' ), __( 'Every WordPress site you look after, ready in its own window.', 'fleet-for-openstation' ) );
+		if ( self::connection_review( $state ) ) {
+			return;
+		}
 		if ( empty( $data['sites'] ) ) {
 			?>
 			<os-empty-state icon="dashicons-admin-site-alt3" heading="<?php echo self::e( __( 'Connect your first site', 'fleet-for-openstation' ) ); ?>">
@@ -365,15 +549,45 @@ final class OpenStation_Fleet_App {
 			return;
 		}
 		self::site_header( $site, $state );
-		if ( 'pending' === $site['setup_status'] ) {
+		if ( self::connection_review( $state ) ) {
+			return;
+		}
+		if ( $state->get( 'saved' ) ) {
+			echo '<os-notice tone="success" role="status">' . self::e( $state->get( 'saved' ) ) . '</os-notice>';
+		}
+		if ( 'pending' === $site['setup_status'] || 'error' === $site['setup_status'] ) {
 			?>
-			<section class="fleet-native-setup"><span class="dashicons dashicons-yes-alt" aria-hidden="true"></span><div><strong><?php echo self::e( __( 'Connection approved', 'fleet-for-openstation' ) ); ?></strong><p><?php echo self::e( __( 'Finish the connection, then this site is ready to manage from Fleet.', 'fleet-for-openstation' ) ); ?></p></div><os-button variant="primary" os-action="finish-setup"><?php echo self::e( __( 'Finish connection', 'fleet-for-openstation' ) ); ?></os-button></section>
+			<section class="fleet-native-setup"><span class="dashicons dashicons-yes-alt" aria-hidden="true"></span><div><strong><?php echo self::e( __( 'Connection approved', 'fleet-for-openstation' ) ); ?></strong><p><?php echo self::e( __( 'Next, Fleet will install or activate OpenStation and check this site. You can safely retry this step if setup fails.', 'fleet-for-openstation' ) ); ?></p></div><os-button variant="primary" os-action="finish-setup"><?php echo self::e( __( 'Finish setup', 'fleet-for-openstation' ) ); ?></os-button><os-button os-action="reconnect"><?php echo self::e( __( 'Repair connection', 'fleet-for-openstation' ) ); ?></os-button></section>
 			<?php
 			return;
 		}
-		$data = OpenStation_Fleet::app_site_data( $id, $section );
+		if ( 'content' === $section && $state->get( 'editor' ) ) {
+			if ( $state->get( 'review' ) ) {
+				self::render_content_review( (array) $state->get( 'editor' ), (array) $state->get( 'review' ), $site );
+			} elseif ( $state->get( 'history' ) ) {
+				self::render_revisions( $state );
+			} else {
+				self::render_editor( (array) $state->get( 'editor' ) );
+			}
+			return;
+		}
+		$collections = (array) $state->get( 'collections' );
+		$options     = isset( $collections[ $section ] ) ? $collections[ $section ] : array();
+		if ( in_array( $section, array( 'content', 'comments', 'media', 'users' ), true ) ) {
+			$types = 'content' === $section ? OpenStation_Fleet::app_site_data( $id, 'content-types' ) : array();
+			if ( is_wp_error( $types ) ) {
+				self::error( $types );
+				return;
+			}
+			self::collection_filters( $section, $options, $types );
+			if ( 'content' === $section ) {
+				self::render_work_views( $id, (bool) $state->get( 'views_open' ) );
+			}
+		}
+		$data = OpenStation_Fleet::app_site_data( $id, $section, $options );
 		if ( is_wp_error( $data ) ) {
 			self::error( $data );
+			echo '<p>' . self::e( __( 'Check the site and your WordPress permissions. If access was revoked, repair the connection.', 'fleet-for-openstation' ) ) . '</p><os-button os-action="reconnect">' . self::e( __( 'Repair connection', 'fleet-for-openstation' ) ) . '</os-button>';
 			return;
 		}
 		switch ( $section ) {
@@ -407,6 +621,9 @@ final class OpenStation_Fleet_App {
 			default:
 				self::render_overview( $data, $site );
 				break;
+		}
+		if ( isset( $data['pagination'] ) ) {
+			self::pagination( $section, $data['pagination'] );
 		}
 	}
 
@@ -464,57 +681,43 @@ endif;
 	 * @param array $data Managed-site content data.
 	 */
 	private static function render_content( $data ) {
+		$type    = $data['type'];
+		$items   = self::items( $data[ $type ] );
+		$rows    = array_map(
+			static function ( $item ) {
+				return array(
+					'id'       => $item['id'],
+					'title'    => self::title( $item ),
+					'status'   => $item['status'],
+					'modified' => str_replace( 'T', ' ', $item['modified'] ),
+				);
+			},
+			$items
+		);
+		$columns = array(
+			array(
+				'key'      => 'title',
+				'label'    => __( 'Title', 'fleet-for-openstation' ),
+				'sortable' => true,
+			),
+			array(
+				'key'      => 'status',
+				'label'    => __( 'Status', 'fleet-for-openstation' ),
+				'sortable' => true,
+				'width'    => '110px',
+			),
+			array(
+				'key'      => 'modified',
+				'label'    => __( 'Modified (site time)', 'fleet-for-openstation' ),
+				'sortable' => true,
+				'width'    => '180px',
+			),
+		);
 		?>
-		<div class="fleet-native-section-heading"><span><small><?php echo self::e( __( 'Posts and pages', 'fleet-for-openstation' ) ); ?></small><h2><?php echo self::e( __( 'Publishing', 'fleet-for-openstation' ) ); ?></h2></span></div>
+		<div class="fleet-native-section-heading"><span><small><?php echo self::e( __( 'Publishing', 'fleet-for-openstation' ) ); ?></small><h2><?php echo self::e( $data['descriptor']['name'] ); ?></h2></span><os-button variant="primary" os-action="new-content" os-arg-type="<?php echo self::e( $type ); ?>"><?php echo self::e( 'pages' === $type ? __( 'New page', 'fleet-for-openstation' ) : ( 'posts' === $type ? __( 'New post', 'fleet-for-openstation' ) : __( 'New item', 'fleet-for-openstation' ) ) ); ?></os-button></div>
+		<os-table class="fleet-native-content-list" os-key="<?php echo self::e( $type ); ?>" os-action="edit-content" os-arg-type="<?php echo self::e( $type ); ?>" os-prop-columns="<?php echo self::j( $columns ); ?>" os-prop-data="<?php echo self::j( $rows ); ?>" sticky-header empty="<?php echo self::e( __( 'No matching content. Try another search or status.', 'fleet-for-openstation' ) ); ?>"></os-table>
 		<?php
-		foreach ( array(
-			'posts' => __( 'Posts', 'fleet-for-openstation' ),
-			'pages' => __( 'Pages', 'fleet-for-openstation' ),
-		) as $key => $label ) {
-			$items = self::items( isset( $data[ $key ] ) ? $data[ $key ] : array() );
-			?>
-			<section class="fleet-native-panel"><header><h3><?php echo self::e( $label ); ?></h3><os-badge><?php echo self::e( count( $items ) ); ?></os-badge></header>
-			<?php
-			if ( isset( $data[ $key ] ) && is_wp_error( $data[ $key ] ) ) {
-				self::error( $data[ $key ] ); }
-			if ( empty( $items ) && ! ( isset( $data[ $key ] ) && is_wp_error( $data[ $key ] ) ) ) {
-					// translators: %s: content collection label, such as posts or pages.
-					$empty_label = sprintf( __( 'No %s were returned.', 'fleet-for-openstation' ), strtolower( $label ) );
-				?>
-				<p class="fleet-native-empty-row"><?php echo self::e( $empty_label ); ?></p>
-				<?php
-			}
-			foreach ( $items as $item ) {
-				if ( empty( $item['id'] ) ) {
-					continue; }
-				?>
-				<os-form class="fleet-native-row-form" os-action="save-content" submit-label="<?php echo self::e( __( 'Save', 'fleet-for-openstation' ) ); ?>" show-reset="false">
-					<input type="hidden" name="content_type" value="<?php echo self::e( $key ); ?>"><input type="hidden" name="content_id" value="<?php echo self::e( $item['id'] ); ?>">
-					<os-text-field name="title" label="<?php echo self::e( __( 'Title', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( self::title( $item ) ); ?>" required></os-text-field>
-					<?php
-					self::status_select(
-						'status',
-						__( 'Status', 'fleet-for-openstation' ),
-						isset( $item['status'] ) ? $item['status'] : 'draft',
-						array(
-							'publish' => __( 'Published', 'fleet-for-openstation' ),
-							'draft'   => __( 'Draft', 'fleet-for-openstation' ),
-							'pending' => __( 'Pending review', 'fleet-for-openstation' ),
-							'future'  => __( 'Scheduled', 'fleet-for-openstation' ),
-							'private' => __( 'Private', 'fleet-for-openstation' ),
-							'trash'   => __( 'Trash', 'fleet-for-openstation' ),
-						)
-					);
-					?>
-				</os-form>
-				<?php
-			}
-			?>
-			</section>
-			<?php
-		}
 	}
-
 	/**
 	 * Render comments.
 	 *
@@ -716,7 +919,7 @@ endif;
 		<os-form class="fleet-native-panel" os-action="save-settings" submit-label="<?php echo self::e( __( 'Save site settings', 'fleet-for-openstation' ) ); ?>" show-reset="false">
 			<os-text-field name="title" label="<?php echo self::e( __( 'Site title', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( isset( $settings['title'] ) ? $settings['title'] : '' ); ?>" full-width required></os-text-field>
 			<os-text-field name="description" label="<?php echo self::e( __( 'Tagline', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( isset( $settings['description'] ) ? $settings['description'] : '' ); ?>" full-width></os-text-field>
-			<os-text-field name="timezone_string" label="<?php echo self::e( __( 'Timezone', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( isset( $settings['timezone_string'] ) ? $settings['timezone_string'] : '' ); ?>" placeholder="America/Chicago"></os-text-field>
+			<os-text-field name="timezone" label="<?php echo self::e( __( 'Timezone', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( isset( $settings['timezone'] ) ? $settings['timezone'] : '' ); ?>" placeholder="America/Chicago"></os-text-field>
 			<?php
 			self::status_select(
 				'start_of_week',
@@ -819,7 +1022,7 @@ endif;
 	}
 
 	/**
-	 * Render schema-discovered routes and WordPress 6.9+ Abilities.
+	 * Render schema-discovered routes and Core Abilities.
 	 *
 	 * @param array                 $data  Managed-site API data.
 	 * @param OpenStation\App\State $state App state.
@@ -837,7 +1040,7 @@ endif;
 		if ( ! is_wp_error( $catalog ) ) :
 			?>
 			<os-badge><?php echo self::e( count( $catalog ) ); ?> <?php echo self::e( __( 'routes', 'fleet-for-openstation' ) ); ?></os-badge><?php endif; ?></div>
-		<os-notice tone="info"><?php echo self::e( __( 'Fleet reads the site’s live REST index and uses the approved account’s permissions. WordPress 6.9+ Abilities are discovered automatically, and supported Core Abilities are used for richer site facts.', 'fleet-for-openstation' ) ); ?></os-notice>
+		<os-notice tone="info"><?php echo self::e( __( 'Fleet reads the site’s live REST index and uses the approved account’s permissions. Core Abilities are discovered automatically and used for richer site facts when exposed by WordPress.', 'fleet-for-openstation' ) ); ?></os-notice>
 		<div class="fleet-native-two-column"><section class="fleet-native-api-controls"><os-form class="fleet-native-panel" os-action="api-request" submit-label="<?php echo self::e( __( 'Read route', 'fleet-for-openstation' ) ); ?>" show-reset="false" columns="1">
 			<div slot="header"><h3><?php echo self::e( __( 'Read from WordPress', 'fleet-for-openstation' ) ); ?></h3><p><?php echo self::e( __( 'GET requests do not change the managed site.', 'fleet-for-openstation' ) ); ?></p></div>
 			<input type="hidden" name="api_method" value="GET">
@@ -964,10 +1167,335 @@ endif;
 		<?php
 	}
 
+	/**
+	 * Render the focused source editor, using native controls.
+	 *
+	 * @param array $editor Editor model.
+	 */
+	private static function render_editor( $editor ) {
+		?>
+		<div class="fleet-native-section-heading"><span><small><?php echo self::e( 'pages' === $editor['content_type'] ? __( 'Page editor', 'fleet-for-openstation' ) : __( 'Post editor', 'fleet-for-openstation' ) ); ?></small><h2><?php echo self::e( $editor['content_id'] ? __( 'Edit content', 'fleet-for-openstation' ) : __( 'Start a draft', 'fleet-for-openstation' ) ); ?></h2></span><os-button os-action="close-editor"><?php echo self::e( __( 'Back to list', 'fleet-for-openstation' ) ); ?></os-button></div>
+		<p class="fleet-native-editor-help"><?php echo self::e( __( 'Source editor · HTML and WordPress block markup. Publishing and scheduling open a review before anything is written.', 'fleet-for-openstation' ) ); ?></p>
+		<os-form class="fleet-native-editor" os-action="save-content" submit-label="<?php echo self::e( __( 'Save to WordPress', 'fleet-for-openstation' ) ); ?>" show-reset="false" columns="1">
+		<?php foreach ( array( 'content_type', 'content_id', 'fingerprint', 'request_id' ) as $key ) : ?>
+			<input type="hidden" name="<?php echo self::e( $key ); ?>" value="<?php echo self::e( $editor[ $key ] ); ?>">
+		<?php endforeach; ?>
+			<os-text-field name="title" label="<?php echo self::e( __( 'Title', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( $editor['title'] ); ?>" required></os-text-field>
+			<os-textarea name="content" label="<?php echo self::e( __( 'Content source', 'fleet-for-openstation' ) ); ?>" rows="8" value="<?php echo self::e( $editor['content'] ); ?>"></os-textarea>
+			<div class="fleet-native-editor-meta">
+			<?php
+			self::status_select(
+				'status',
+				__( 'Status', 'fleet-for-openstation' ),
+				$editor['status'],
+				array(
+					'draft'   => __( 'Draft', 'fleet-for-openstation' ),
+					'pending' => __( 'Pending review', 'fleet-for-openstation' ),
+					'publish' => __( 'Published', 'fleet-for-openstation' ),
+					'private' => __( 'Private', 'fleet-for-openstation' ),
+					'future'  => __( 'Scheduled', 'fleet-for-openstation' ),
+				)
+			);
+			?>
+			<os-text-field name="date_gmt" label="<?php echo self::e( __( 'Publish date (UTC)', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( $editor['date_gmt'] ); ?>" placeholder="2026-12-31T14:30:00"></os-text-field>
+			</div>
+			<details class="fleet-native-editor-details"><summary><?php echo self::e( __( 'Excerpt and URL slug', 'fleet-for-openstation' ) ); ?></summary>
+				<os-text-field name="slug" label="<?php echo self::e( __( 'URL slug', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( $editor['slug'] ); ?>"></os-text-field>
+				<?php if ( ! empty( $editor['descriptor']['supports']['excerpt'] ) ) : ?>
+					<os-textarea name="excerpt" label="<?php echo self::e( __( 'Excerpt source', 'fleet-for-openstation' ) ); ?>" rows="3" value="<?php echo self::e( $editor['excerpt'] ); ?>"></os-textarea>
+				<?php else : ?>
+					<input type="hidden" name="excerpt" value="">
+				<?php endif; ?>
+			</details>
+			<os-save-status class="fleet-native-save-state" phase="idle" mode="pill" idle-label="<?php echo self::e( __( 'Save when you are ready', 'fleet-for-openstation' ) ); ?>"></os-save-status>
+		</os-form>
+		<?php if ( $editor['content_id'] && ! empty( $editor['descriptor']['supports']['revisions'] ) ) : ?>
+			<os-button os-action="revision-history"><?php echo self::e( __( 'Revision history', 'fleet-for-openstation' ) ); ?></os-button>
+		<?php endif; ?>
+		<?php if ( $editor['content_id'] && 'trash' !== $editor['status'] ) : ?>
+			<os-button variant="ghost" os-action="trash-content" os-arg-content_type="<?php echo self::e( $editor['content_type'] ); ?>" os-arg-content_id="<?php echo self::e( $editor['content_id'] ); ?>" os-arg-fingerprint="<?php echo self::e( $editor['fingerprint'] ); ?>" os-confirm="<?php echo self::e( __( 'Move this item to WordPress Trash? You can restore it from the Trash filter.', 'fleet-for-openstation' ) ); ?>"><?php echo self::e( __( 'Move to Trash', 'fleet-for-openstation' ) ); ?></os-button>
+		<?php endif; ?>
+		<?php
+	}
+
+	/**
+	 * Review before a public or scheduled write; destination is server-resolved.
+	 *
+	 * @param array $editor Submitted source.
+	 * @param array $review Signed review data.
+	 * @param array $site Public site model.
+	 */
+	private static function render_content_review( $editor, $review, $site ) {
+		$status_labels = array(
+			'publish' => __( 'Published', 'fleet-for-openstation' ),
+			'future'  => __( 'Scheduled', 'fleet-for-openstation' ),
+			'draft'   => __( 'Draft', 'fleet-for-openstation' ),
+			'pending' => __( 'Pending review', 'fleet-for-openstation' ),
+			'private' => __( 'Private', 'fleet-for-openstation' ),
+		);
+		?>
+		<section class="fleet-native-publish-review fleet-native-editor-action">
+			<div class="fleet-native-section-heading"><span><small><?php echo self::e( __( 'Review before saving', 'fleet-for-openstation' ) ); ?></small><h2><?php echo self::e( $editor['title'] ); ?></h2></span></div>
+			<dl class="fleet-native-review-summary"><div><dt><?php echo self::e( __( 'Destination', 'fleet-for-openstation' ) ); ?></dt><dd><?php echo self::e( $site['url'] ); ?></dd></div><div><dt><?php echo self::e( __( 'Status', 'fleet-for-openstation' ) ); ?></dt><dd><?php echo self::e( $status_labels[ $editor['status'] ] ?? $editor['status'] ); ?></dd></div><div><dt><?php echo self::e( __( 'Publish date', 'fleet-for-openstation' ) ); ?></dt><dd><?php echo self::e( $review['when'] ); ?></dd></div></dl>
+			<p class="fleet-native-editor-help"><?php echo self::e( __( 'Nothing has been written yet. Confirm only when this is the right site. The review expires after ten minutes; WordPress is checked again before saving.', 'fleet-for-openstation' ) ); ?></p>
+			<div class="fleet-native-review-actions"><os-button variant="primary" os-action="confirm-content"><?php echo self::e( __( 'Confirm and save', 'fleet-for-openstation' ) ); ?></os-button><os-button os-action="cancel-review"><?php echo self::e( __( 'Keep editing', 'fleet-for-openstation' ) ); ?></os-button></div>
+			<?php self::content_diff( $review['before'], $editor ); ?>
+		</section>
+		<?php
+	}
+
+	/**
+	 * Core's escaped diff renderer, bounded to avoid expensive huge comparisons.
+	 *
+	 * @param array $before Original field values.
+	 * @param array $after Proposed field values.
+	 */
+	private static function content_diff( $before, $after ) {
+		$labels  = array(
+			'title'    => __( 'Title', 'fleet-for-openstation' ),
+			'content'  => __( 'Content source', 'fleet-for-openstation' ),
+			'excerpt'  => __( 'Excerpt', 'fleet-for-openstation' ),
+			'slug'     => __( 'URL slug', 'fleet-for-openstation' ),
+			'status'   => __( 'Status', 'fleet-for-openstation' ),
+			'date_gmt' => __( 'Publish date (UTC)', 'fleet-for-openstation' ),
+		);
+		$changed = false;
+		foreach ( $labels as $key => $label ) {
+			$old = isset( $before[ $key ] ) ? (string) $before[ $key ] : '';
+			$new = isset( $after[ $key ] ) ? (string) $after[ $key ] : '';
+			if ( $old === $new ) {
+				continue;
+			}
+			$changed = true;
+			echo '<details class="fleet-native-diff" open><summary>' . self::e( $label ) . '</summary>';
+			if ( strlen( $old ) + strlen( $new ) > 24000 ) {
+				echo '<p>' . self::e( __( 'Long source: showing the first 12,000 characters of each version. Review the full source in the editor before saving.', 'fleet-for-openstation' ) ) . '</p>';
+				echo '<div class="fleet-native-diff-long"><pre>' . self::e( substr( $old, 0, 12000 ) ) . '</pre><pre>' . self::e( substr( $new, 0, 12000 ) ) . '</pre></div>';
+			} else {
+				echo wp_kses_post(
+					wp_text_diff(
+						$old,
+						$new,
+						array(
+							'title_left'  => __( 'Before', 'fleet-for-openstation' ),
+							'title_right' => __( 'After', 'fleet-for-openstation' ),
+						)
+					)
+				);
+			}
+			echo '</details>';
+		}
+		if ( ! $changed ) {
+			echo '<p>' . self::e( __( 'No changes to the supported fields.', 'fleet-for-openstation' ) ) . '</p>';
+		}
+	}
+
+	/**
+	 * Browse and compare Core revisions without performing a restore write.
+	 *
+	 * @param OpenStation\App\State $state App state.
+	 */
+	private static function render_revisions( $state ) {
+		$history  = (array) $state->get( 'history' );
+		$revision = (array) $state->get( 'revision' );
+		$editor   = (array) $state->get( 'editor' );
+		?>
+		<section class="fleet-native-revisions fleet-native-editor-action">
+			<div class="fleet-native-section-heading"><span><small><?php echo self::e( __( 'Recovery', 'fleet-for-openstation' ) ); ?></small><h2><?php echo self::e( __( 'Revision history', 'fleet-for-openstation' ) ); ?></h2></span><os-button os-action="close-history"><?php echo self::e( __( 'Back to editor', 'fleet-for-openstation' ) ); ?></os-button></div>
+			<p class="fleet-native-editor-help"><?php echo self::e( __( 'Compare an earlier version, then load its title, content and supported excerpt into the editor. Status, date and URL stay unchanged. Nothing is saved automatically.', 'fleet-for-openstation' ) ); ?></p>
+			<?php if ( $revision ) : ?>
+				<h3><?php echo self::e( str_replace( 'T', ' ', $revision['date_gmt'] ) . ' UTC' ); ?></h3>
+				<?php self::content_diff( $editor, array_merge( $editor, array_intersect_key( OpenStation_Fleet_Content::editable( $revision ), array_flip( array( 'title', 'content', 'excerpt' ) ) ) ) ); ?>
+				<os-button variant="primary" os-action="use-revision"><?php echo self::e( __( 'Use this revision', 'fleet-for-openstation' ) ); ?></os-button>
+			<?php endif; ?>
+			<div class="fleet-native-panel">
+			<?php foreach ( $history['items'] as $item ) : ?>
+				<div class="fleet-native-list-row"><span><?php echo self::e( str_replace( 'T', ' ', $item['date_gmt'] ) . ' UTC' ); ?></span><os-button os-action="preview-revision" os-arg-revision_id="<?php echo self::e( $item['id'] ); ?>"><?php echo self::e( __( 'Compare revision', 'fleet-for-openstation' ) ); ?></os-button></div>
+			<?php endforeach; ?>
+			<?php
+			if ( empty( $history['items'] ) ) :
+				?>
+				<p class="fleet-native-empty-row"><?php echo self::e( __( 'No revisions are available yet.', 'fleet-for-openstation' ) ); ?></p><?php endif; ?>
+			</div>
+			<div class="fleet-native-review-actions">
+			<?php
+			if ( $history['page'] > 1 ) :
+				?>
+				<os-button os-action="revision-history" os-arg-page="<?php echo self::e( $history['page'] - 1 ); ?>"><?php echo self::e( __( 'Newer revisions', 'fleet-for-openstation' ) ); ?></os-button><?php endif; ?>
+			<?php
+			if ( $history['page'] * 12 < $history['total'] ) :
+				?>
+				<os-button os-action="revision-history" os-arg-page="<?php echo self::e( $history['page'] + 1 ); ?>"><?php echo self::e( __( 'Older revisions', 'fleet-for-openstation' ) ); ?></os-button><?php endif; ?>
+			</div>
+		</section>
+		<?php
+	}
+
+	/**
+	 * Small saved-filter drawer, owned by this hub user and destination site.
+	 *
+	 * @param string $id Connected site id.
+	 * @param bool   $open Keep view controls open after a view action.
+	 */
+	private static function render_work_views( $id, $open ) {
+		$views = OpenStation_Fleet::work_views( $id );
+		if ( is_wp_error( $views ) ) {
+			return;
+		}
+		?>
+		<details class="fleet-native-saved-views" <?php echo $open ? 'open' : ''; ?>><summary><?php echo self::e( __( 'Saved work views', 'fleet-for-openstation' ) ); ?></summary>
+			<p><?php echo self::e( __( 'Save the currently applied filters for this site. Views belong to you; results are fetched live, one page at a time.', 'fleet-for-openstation' ) ); ?></p>
+			<?php foreach ( $views as $key => $view ) : ?>
+				<div class="fleet-native-list-row"><os-button os-action="apply-view" os-arg-view_id="<?php echo self::e( $key ); ?>"><?php echo self::e( $view['name'] ); ?></os-button><os-button variant="ghost" os-action="delete-view" os-arg-view_id="<?php echo self::e( $key ); ?>"><?php echo self::e( __( 'Remove', 'fleet-for-openstation' ) . ' ' . $view['name'] ); ?></os-button></div>
+			<?php endforeach; ?>
+			<os-form os-action="save-view" submit-label="<?php echo self::e( __( 'Save view', 'fleet-for-openstation' ) ); ?>" show-reset="false" columns="1"><os-text-field name="view_name" label="<?php echo self::e( __( 'View name', 'fleet-for-openstation' ) ); ?>" placeholder="<?php echo self::e( __( 'Pending review', 'fleet-for-openstation' ) ); ?>" required></os-text-field></os-form>
+		</details>
+		<?php
+	}
+
+	/**
+	 * Search/filter one bounded collection, independent for each window.
+	 *
+	 * @param string $section Collection section.
+	 * @param array  $options Current filters.
+	 * @param array  $types Discovered content types.
+	 */
+	private static function collection_filters( $section, $options, $types = array() ) {
+		?>
+		<os-form class="fleet-native-filters" os-action="browse" submit-label="<?php echo self::e( __( 'Apply filters', 'fleet-for-openstation' ) ); ?>" show-reset="false">
+			<input type="hidden" name="section" value="<?php echo self::e( $section ); ?>"><input type="hidden" name="page" value="1">
+			<?php
+			if ( 'content' === $section ) {
+				self::status_select(
+					'type',
+					__( 'Content type', 'fleet-for-openstation' ),
+					isset( $options['type'] ) ? $options['type'] : 'posts',
+					array_map(
+						static function ( $type ) {
+							return $type['name']; },
+						$types
+					)
+				);
+				self::status_select(
+					'status',
+					__( 'Status', 'fleet-for-openstation' ),
+					isset( $options['status'] ) ? $options['status'] : 'any',
+					array(
+						'any'     => __( 'All except Trash', 'fleet-for-openstation' ),
+						'draft'   => __( 'Draft', 'fleet-for-openstation' ),
+						'publish' => __( 'Published', 'fleet-for-openstation' ),
+						'pending' => __( 'Pending review', 'fleet-for-openstation' ),
+						'private' => __( 'Private', 'fleet-for-openstation' ),
+						'future'  => __( 'Scheduled', 'fleet-for-openstation' ),
+						'trash'   => __( 'Trash', 'fleet-for-openstation' ),
+					)
+				);
+				self::status_select(
+					'period',
+					__( 'Publish date', 'fleet-for-openstation' ),
+					isset( $options['period'] ) ? $options['period'] : 'all',
+					array(
+						'all'  => __( 'Any date', 'fleet-for-openstation' ),
+						'week' => __( 'This week (site time)', 'fleet-for-openstation' ),
+					)
+				);
+			} elseif ( 'comments' === $section ) {
+				self::status_select(
+					'status',
+					__( 'Status', 'fleet-for-openstation' ),
+					isset( $options['status'] ) ? $options['status'] : 'all',
+					array(
+						'all'     => __( 'All', 'fleet-for-openstation' ),
+						'hold'    => __( 'Pending', 'fleet-for-openstation' ),
+						'approve' => __( 'Approved', 'fleet-for-openstation' ),
+						'spam'    => __( 'Spam', 'fleet-for-openstation' ),
+						'trash'   => __( 'Trash', 'fleet-for-openstation' ),
+					)
+				);
+			}
+			?>
+			<os-text-field name="search" label="<?php echo self::e( __( 'Search this site', 'fleet-for-openstation' ) ); ?>" value="<?php echo self::e( isset( $options['search'] ) ? $options['search'] : '' ); ?>"></os-text-field>
+		</os-form>
+		<?php
+	}
+
+	/**
+	 * Render Core pagination without a silent item cap.
+	 *
+	 * @param string $section Collection section.
+	 * @param array  $data Collection envelope.
+	 */
+	private static function pagination( $section, $data ) {
+		// translators: 1: page number, 2: page count, 3: total matching items.
+		$label = sprintf( __( 'Page %1$d of %2$d · %3$d items', 'fleet-for-openstation' ), $data['page'], max( 1, $data['pages'] ), $data['total'] );
+		?>
+		<nav class="fleet-native-pagination" aria-label="<?php echo self::e( __( 'Collection pages', 'fleet-for-openstation' ) ); ?>"><span><?php echo self::e( $label ); ?></span><span>
+		<?php
+		if ( $data['page'] > 1 ) :
+			?>
+			<os-button os-action="browse" os-arg-section="<?php echo self::e( $section ); ?>" os-arg-page="<?php echo self::e( $data['page'] - 1 ); ?>"><?php echo self::e( __( 'Previous', 'fleet-for-openstation' ) ); ?></os-button><?php endif; ?>
+		<?php
+		if ( $data['page'] < $data['pages'] ) :
+			?>
+			<os-button os-action="browse" os-arg-section="<?php echo self::e( $section ); ?>" os-arg-page="<?php echo self::e( $data['page'] + 1 ); ?>"><?php echo self::e( __( 'Next', 'fleet-for-openstation' ) ); ?></os-button><?php endif; ?>
+		</span></nav>
+		<?php
+	}
+
+	/**
+	 * Dispatch the reviewed, expiring Core approval.
+	 *
+	 * @param string                $action Action name.
+	 * @param OpenStation\App\State $state State.
+	 * @param OpenStation\App\Os    $os Host handle.
+	 * @return bool
+	 */
+	private static function connection_action( $action, $state, $os ) {
+		if ( 'cancel-connect' === $action ) {
+			$state->set( 'connection', array() );
+			return true;
+		}
+		if ( 'authorize' !== $action ) {
+			return false;
+		}
+		$connection = (array) $state->get( 'connection' );
+		$url        = OpenStation_Fleet::app_authorize( isset( $connection['ticket'] ) ? $connection['ticket'] : null );
+		if ( is_wp_error( $url ) ) {
+			$state->set( 'notice', $url->get_error_message() );
+			$state->set( 'connection', array() );
+		} else {
+			$os->effects->add( 'fleet-authorize', array( 'url' => $url ) );
+		}
+		return true;
+	}
+
+	/**
+	 * Show what passed and what the user is about to approve.
+	 *
+	 * @param OpenStation\App\State $state State.
+	 * @return bool
+	 */
+	private static function connection_review( $state ) {
+		$connection = (array) $state->get( 'connection' );
+		if ( empty( $connection['authorization_url'] ) ) {
+			return false;
+		}
+		?>
+		<section class="fleet-native-connection-review">
+			<os-badge tone="success"><?php echo self::e( __( 'Ready for approval', 'fleet-for-openstation' ) ); ?></os-badge>
+			<h2><?php echo self::e( $connection['name'] ); ?></h2><p><?php echo self::e( $connection['url'] ); ?></p>
+			<ol><li><?php echo self::e( __( 'Checked: HTTPS, WordPress REST API, and Application Password approval.', 'fleet-for-openstation' ) ); ?></li><li><?php echo self::e( __( 'Next: sign in on this site as an administrator and approve Fleet. WordPress may ask for your login; Fleet never receives that password.', 'fleet-for-openstation' ) ); ?></li><li><?php echo self::e( __( 'Then: return here to finish OpenStation setup. No Fleet plugin is installed on the managed site.', 'fleet-for-openstation' ) ); ?></li></ol>
+			<os-notice tone="warning"><?php echo self::e( __( 'This is administrator-level access, not a limited OAuth scope. The separate Application Password has no automatic expiry. You can revoke it on WordPress or disconnect it in Fleet.', 'fleet-for-openstation' ) ); ?></os-notice>
+			<div class="fleet-native-review-actions"><os-button variant="primary" os-action="authorize"><?php echo self::e( __( 'Continue to WordPress', 'fleet-for-openstation' ) ); ?></os-button><os-button os-action="cancel-connect"><?php echo self::e( __( 'Cancel', 'fleet-for-openstation' ) ); ?></os-button></div>
+		</section>
+		<?php
+		return true;
+	}
+
 	/** Render the connection form. */
 	private static function connect_form() {
 		?>
-		<os-form class="fleet-native-connect" os-action="connect" submit-label="<?php echo self::e( __( 'Connect site', 'fleet-for-openstation' ) ); ?>" show-reset="false" columns="1">
+		<os-form class="fleet-native-connect" os-action="connect" submit-label="<?php echo self::e( __( 'Check connection', 'fleet-for-openstation' ) ); ?>" show-reset="false" columns="1">
 			<div slot="header"><span class="dashicons dashicons-plus-alt2" aria-hidden="true"></span><span><h3><?php echo self::e( __( 'Connect another WordPress site', 'fleet-for-openstation' ) ); ?></h3><p><?php echo self::e( __( 'The managed site needs only WordPress Core and HTTPS—no Fleet plugin installation.', 'fleet-for-openstation' ) ); ?></p></span></div>
 			<os-text-field name="site_url" type="url" label="<?php echo self::e( __( 'Site address', 'fleet-for-openstation' ) ); ?>" placeholder="https://client.example" required></os-text-field>
 		</os-form>

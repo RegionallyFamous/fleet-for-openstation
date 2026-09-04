@@ -6,6 +6,11 @@
 	}
 	window.__openStationFleetEffects = true;
 
+	// Ask the public loader before server-rendered controls arrive. The shared
+	// kit is deduplicated by OpenStation; Fleet never bundles a second copy.
+	window.wp.os.loadComponents( [ 'os-stack', 'os-tabpanel', 'os-form', 'os-table', 'os-save-status' ] )
+		.catch( ( error ) => window.console.error( '[Fleet] Native controls could not load.', error ) );
+
 	const pendingSites = new Map();
 	let authorizationStarted = false;
 	let recentWorkspace = { key: '', openedAt: 0 };
@@ -153,9 +158,94 @@
 		return opened;
 	};
 
+	// Unsaved content stays in this page's memory, never in localStorage or cookies.
+	const dirtyWindows = new Set();
+	const windowElement = ( element ) => element?.closest?.( '.os-window' );
+	const confirmDiscard = () => window.wp.os.confirm( {
+		title: 'Discard unsaved changes?',
+		message: 'Your content has not been saved to WordPress. Stay here to save it or copy your changes first.',
+		confirmLabel: 'Discard changes',
+		danger: true,
+	} );
+	document.addEventListener( 'os-form-input', ( event ) => {
+		const form = event.detail?.form;
+		if ( ! form?.matches?.( '.fleet-native-editor' ) ) {
+			return;
+		}
+		const owner = windowElement( form );
+		if ( owner ) {
+			dirtyWindows.add( owner.id );
+			const status = form.querySelector( '.fleet-native-save-state' );
+			if ( status ) {
+				status.setAttribute( 'idle-label', 'Unsaved changes' );
+			}
+		}
+	} );
+	document.addEventListener( 'click', ( event ) => {
+		const target = event.target?.closest?.( '.os-window__tab, [os-action]' );
+		const owner = windowElement( target );
+		if ( ! owner || ! dirtyWindows.has( owner.id ) || target.closest( '.fleet-native-editor, .fleet-native-editor-action' ) ) {
+			return;
+		}
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		confirmDiscard().then( ( accepted ) => {
+			if ( accepted && target.isConnected ) {
+				dirtyWindows.delete( owner.id );
+				target.click();
+			}
+		} );
+	}, true );
+	window.addEventListener( 'beforeunload', ( event ) => {
+		if ( dirtyWindows.size ) {
+			event.preventDefault();
+			event.returnValue = '';
+		}
+	} );
+	window.wp?.hooks?.addFilter( 'os.native-window.before-close', 'fleet/unsaved-content', ( allowed, context ) => {
+		const managed = window.wp.os.windowManager.getById( context.windowId );
+		const owner = managed?.element;
+		if ( ! allowed || ! owner || ! dirtyWindows.has( owner.id ) ) {
+			return allowed;
+		}
+		confirmDiscard().then( ( accepted ) => {
+			if ( accepted ) {
+				dirtyWindows.delete( owner.id );
+				managed.close();
+			}
+		} );
+		return false;
+	} );
+
+	const callback = new URL( window.location.href );
+	const connectedId = callback.searchParams.get( 'fleet_connected' );
+	if ( connectedId && /^[a-f0-9]{16}$/.test( connectedId ) ) {
+		callback.searchParams.delete( 'fleet_connected' );
+		window.history.replaceState( null, '', callback.toString() );
+		let attempts = 0;
+		const resumeSetup = () => {
+			if ( ! openSite( connectedId ) && ++attempts < 40 ) {
+				window.setTimeout( resumeSetup, 250 );
+			}
+		};
+		window.setTimeout( resumeSetup, 250 );
+	}
+
 	document.addEventListener( 'os-app-effect', ( event ) => {
 		const detail = event.detail || {};
 		const effect = detail.effect || {};
+		if ( effect.type === 'fleet-editor-clean' || effect.type === 'fleet-editor-dirty' ) {
+			const owner = windowElement( event.target );
+			if ( owner ) {
+				if ( effect.type === 'fleet-editor-dirty' ) {
+					dirtyWindows.add( owner.id );
+					owner.querySelectorAll( '.fleet-native-save-state' ).forEach( ( status ) => status.setAttribute( 'idle-label', 'Unsaved changes' ) );
+				} else {
+					dirtyWindows.delete( owner.id );
+				}
+			}
+			return;
+		}
 		if ( effect.type === 'fleet-open-site' ) {
 			openSite( effect.siteId );
 			return;

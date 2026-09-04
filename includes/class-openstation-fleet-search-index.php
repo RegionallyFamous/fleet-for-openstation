@@ -498,7 +498,7 @@ final class OpenStation_Fleet_Search_Index {
 	 * @return array Normalized response envelope.
 	 */
 	private function response_envelope( $response, $page ) {
-		if ( is_array( $response ) && ! $this->is_list( $response ) && array_key_exists( 'items', $response ) ) {
+		if ( is_array( $response ) && ! array_is_list( $response ) && array_key_exists( 'items', $response ) ) {
 			$items = is_array( $response['items'] ) ? array_values( $response['items'] ) : array();
 		} else {
 			$items    = is_array( $response ) ? array_values( $response ) : array();
@@ -743,24 +743,5 @@ final class OpenStation_Fleet_Search_Index {
 	 */
 	private function timestamp( $now ) {
 		return null === $now ? time() : max( 0, (int) $now );
-	}
-
-	/**
-	 * Detect sequential arrays on PHP 7.4.
-	 *
-	 * @param mixed $value Candidate array.
-	 * @return bool Whether the value is a list.
-	 */
-	private function is_list( $value ) {
-		if ( ! is_array( $value ) ) {
-			return false;
-		}
-		$position = 0;
-		foreach ( $value as $key => $unused ) {
-			if ( $key !== $position++ ) {
-				return false;
-			}
-		}
-		return true;
 	}
 }

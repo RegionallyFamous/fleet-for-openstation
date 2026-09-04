@@ -62,7 +62,7 @@ function wp_parse_args( $args, $defaults = array() ) {
 }
 
 function get_bloginfo( $show ) {
-	return 'version' === $show ? '6.8.2' : '';
+	return 'version' === $show ? '7.1' : '';
 }
 
 function untrailingslashit( $value ) {
@@ -995,5 +995,99 @@ $recovered = OpenStation_Fleet_Sync_Policy::succeeded( $failed_twice );
 assert( 0 === $recovered['sync_failures'] );
 assert( 0 === $recovered['next_retry'] );
 assert( '' === $recovered['error'] );
+
+// A public REST index is not proof that a saved credential still works.
+// Failed identity checks retain the last inbox and enter retry backoff.
+$refresh = $class->getMethod( 'refresh_site' );
+if ( PHP_VERSION_ID < 80100 ) {
+	$refresh->setAccessible( true );
+}
+$status_site = OpenStation_Fleet::normalize_site_record( array(
+	'site_url' => 'https://site.example',
+	'rest_url' => 'https://site.example/wp-json/',
+	'user_login' => 'fleet-admin',
+	'secret' => $sealed,
+	'metadata_checked' => time(),
+	'health_checked' => time(),
+	'inbox' => array( 'drafts' => array( 'count' => 7 ) ),
+) );
+foreach ( array( 401, 403, 200 ) as $identity_status ) {
+	$fleet_test_remote_responses = array(
+		array( 'response' => array( 'code' => 200 ), 'body' => '{"name":"Public site","routes":{}}' ),
+		array( 'response' => array( 'code' => $identity_status ), 'body' => '{"id":1,"capabilities":{"manage_options":false}}' ),
+	);
+	$status_result = $refresh->invoke( null, $status_site, false );
+	assert( '' !== $status_result['error'] );
+	assert( 0 === $status_result['status_checked'] );
+	assert( $status_result['next_retry'] > time() );
+	assert( 7 === $status_result['inbox']['drafts']['count'] );
+}
+$fleet_test_remote_responses = array(
+	array( 'response' => array( 'code' => 200 ), 'body' => '{"name":"Public site","routes":{}}' ),
+	array( 'response' => array( 'code' => 200 ), 'body' => '{"id":1,"capabilities":{"manage_options":true}}' ),
+);
+$status_result = $refresh->invoke( null, $status_site, false );
+assert( '' === $status_result['error'] );
+assert( $status_result['status_checked'] > 0 );
+assert( 0 === $status_result['next_retry'] );
+
+// The source editor preserves block markup and rejects malformed schedules/types.
+$content_body = array(
+	'title' => 'Launch draft',
+	'content' => '<!-- wp:paragraph {"className":"custom"} --><p class="custom">A &amp; B</p><!-- /wp:paragraph -->',
+	'excerpt' => '<p>Excerpt</p>',
+	'slug' => 'launch-draft',
+	'status' => 'draft',
+	'date_gmt' => '',
+);
+$validated = OpenStation_Fleet_Content::body( $content_body );
+assert( ! is_wp_error( $validated ) );
+assert( $content_body['content'] === $validated['content'] );
+assert( ! isset( $validated['date_gmt'] ) );
+assert( is_wp_error( OpenStation_Fleet_Content::body( array_merge( $content_body, array( 'status' => 'future' ) ) ) ) );
+assert( is_wp_error( OpenStation_Fleet_Content::body( array_merge( $content_body, array( 'date_gmt' => '2026-02-31T12:00:00' ) ) ) ) );
+foreach ( array( "2026-12-31T14:30:00\0", '2026-12-31T14:30:00Z', '2026-12-31T25:30:00', str_repeat( '9', 200001 ) ) as $invalid_date ) {
+	assert( is_wp_error( OpenStation_Fleet_Content::body( array_merge( $content_body, array( 'date_gmt' => $invalid_date ) ) ) ) );
+}
+assert( is_wp_error( OpenStation_Fleet_Content::body( array_merge( $content_body, array( 'content' => array( 'bad' ) ) ) ) ) );
+assert( is_wp_error( OpenStation_Fleet_Content::body( array_merge( $content_body, array( 'title' => '' ) ) ) ) );
+assert( is_wp_error( OpenStation_Fleet_Content::body( array_merge( $content_body, array( 'content' => str_repeat( 'a', 200001 ) ) ) ) ) );
+assert( false === OpenStation_Fleet_Content::valid_type( '../users' ) );
+$type_candidate = array( 'viewable' => true, 'name' => 'Events', 'supports' => array( 'title' => true, 'editor' => true ), 'capabilities' => array( 'edit_posts' => 'edit_events' ), 'rest_namespace' => 'studio/v1', 'rest_base' => 'events' );
+assert( array() === OpenStation_Fleet_Content::types( array( 'event' => $type_candidate ), array() ) );
+assert( 'studio/v1/events' === OpenStation_Fleet_Content::types( array( 'event' => $type_candidate ), array( 'edit_events' => true ) )['event']['route'] );
+assert( 'studio/v1/events' === OpenStation_Fleet_Content::types( array( 'posts' => $type_candidate ), array( 'edit_events' => true ) )['wp_type_posts']['route'] );
+assert( 'studio/v1/events' === OpenStation_Fleet_Content::types( array( 'pages' => $type_candidate ), array( 'edit_events' => true ) )['wp_type_pages']['route'] );
+$type_candidate['rest_base'] = '../users';
+assert( array() === OpenStation_Fleet_Content::types( array( 'event' => $type_candidate ), array( 'edit_events' => true ) ) );
+$content_item = array( 'title' => array( 'raw' => 'Before' ), 'content' => array( 'raw' => 'One' ), 'modified_gmt' => '2026-09-04T12:00:00' );
+$fingerprint = OpenStation_Fleet_Content::fingerprint( $content_item );
+$content_item['content']['raw'] = 'Two';
+assert( $fingerprint !== OpenStation_Fleet_Content::fingerprint( $content_item ) );
+
+// A reconnect preserves the latest agency data and fences off stale writes.
+$reconnect_record = array( 'site_url' => 'https://launch.example', 'connection_generation' => 'old-generation', 'agency' => array( 'notes' => 'Latest private note' ) );
+$normalizer = array( 'OpenStation_Fleet', 'normalize_site_record' );
+assert( true === OpenStation_Fleet_Repository::save( 27, 'launch', $reconnect_record, array(), $normalizer, true ) );
+$replacement = array_merge( $reconnect_record, array( 'connection_generation' => 'new-generation', 'agency' => array( 'notes' => 'Stale note' ) ) );
+assert( false === OpenStation_Fleet_Repository::reauthorize( 27, 'launch', 'wrong-generation', $replacement, $normalizer ) );
+assert( true === OpenStation_Fleet_Repository::reauthorize( 27, 'launch', 'old-generation', $replacement, $normalizer ) );
+assert( 'Latest private note' === OpenStation_Fleet_Repository::get( 27, 'launch', $normalizer )['agency']['notes'] );
+assert( false === OpenStation_Fleet_Repository::save( 27, 'launch', $reconnect_record, array( 'error' ), $normalizer ) );
+assert( false === OpenStation_Fleet_Repository::reauthorize( 27, 'launch', 'old-generation', $replacement, $normalizer ) );
+assert( true === OpenStation_Fleet_Repository::remove( 27, 'launch', 'new-generation' ) );
+
+// A new normalized field must not break compare-and-swap against the stored row.
+assert( true === OpenStation_Fleet_Repository::save( 27, 'defaults', $reconnect_record, array(), $normalizer, true ) );
+$site_key_method = new ReflectionMethod( 'OpenStation_Fleet_Repository', 'site_key' );
+$raw_key = $site_key_method->invoke( null, 'defaults' );
+$raw = get_user_meta( 27, $raw_key, true );
+unset( $raw['views'], $raw['health_error'], $raw['health_attempted'] );
+update_user_meta( 27, $raw_key, $raw );
+$normalized = OpenStation_Fleet_Repository::get( 27, 'defaults', $normalizer );
+$normalized['views'] = array( 'one' => array( 'name' => 'Editorial' ) );
+assert( true === OpenStation_Fleet_Repository::save( 27, 'defaults', $normalized, array( 'views' ), $normalizer ) );
+assert( 'Editorial' === OpenStation_Fleet_Repository::get( 27, 'defaults', $normalizer )['views']['one']['name'] );
+assert( true === OpenStation_Fleet_Repository::remove( 27, 'defaults', 'old-generation' ) );
 
 echo "Fleet smoke checks passed.\n";

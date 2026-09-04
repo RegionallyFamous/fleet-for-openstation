@@ -1,10 +1,10 @@
 === Fleet for OpenStation ===
 Contributors: openstation
 Tags: openstation, agency, site management, application passwords
-Requires at least: 6.5
+Requires at least: 7.1
 Tested up to: 7.1
-Requires PHP: 7.4
-Stable tag: 0.8.0
+Requires PHP: 8.3
+Stable tag: 0.9.0-rc.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -36,16 +36,21 @@ Focused views cover posts, pages, media details, comments, modern block-theme de
 
 Connections use WordPress Core's own Application Password approval screen. Fleet never receives the administrator's normal password. WordPress creates a separate, revocable credential for Fleet, and Fleet encrypts its copy on the hub.
 
-During setup, Fleet can install or activate OpenStation on the managed site so it can open as a native desktop window. Fleet itself remains installed only on the hub.
+Review the detected site before approval, then choose Finish setup to install or activate OpenStation there. Management windows run on the hub. Fleet itself remains installed only on the hub. Repair a revoked connection without losing client details.
+
+Posts and pages have a source editor for HTML and WordPress block markup, with explicit saves, conflict checks, and unsaved-change warnings. It is not the visual block editor or a durable autosave. Application Passwords grant the approving administrator's access and do not automatically expire.
 
 Fleet includes no telemetry or third-party tracking.
+
+Before publishing or scheduling, review the destination and changes, then confirm the save. Compare earlier WordPress revisions and load supported source fields into the editor without saving automatically. Save frequently used content filters per site, and manage editable REST-enabled custom content types with standard WordPress fields.
 
 == Installation ==
 
 1. Install and activate a current OpenStation build with the experimental App Framework on the hub.
 2. Upload and activate Fleet for OpenStation on that hub only.
 3. Open Fleet and enter a public HTTPS WordPress site address.
-4. Approve the connection on the managed site's WordPress screen, then return to Fleet and choose Manage.
+4. Choose Check connection, review the site, and continue to WordPress's approval screen.
+5. Return to Fleet and choose Finish setup. Each connected site opens in its own named window.
 
 == Frequently Asked Questions ==
 
@@ -79,8 +84,26 @@ No. Fleet is a native App Framework application and intentionally has no classic
 6. Reach additional APIs already advertised by the connected WordPress site.
 7. Keep two client sites open at once without losing track of which site you are changing.
 8. Start a connection with only the managed site's HTTPS address—no Fleet plugin installation there.
+9. Edit HTML and WordPress block source in the right site's named window.
+10. Review the destination and changes before confirming a publishing or scheduling save.
 
 == Changelog ==
+
+= 0.9.0-rc.1 =
+
+* Target WordPress 7.1+ and PHP 8.3+ with the native OpenStation App Framework.
+* Fix unsaved window-close protection, stale health findings, timezone saves and malformed dates.
+* Review publishing/scheduling changes and recover supported fields from Core revisions.
+* Save per-site work views and discover supported REST-enabled custom content types.
+* Preserve existing connection records when new metadata defaults are introduced.
+* Review connection readiness and administrator access before WordPress approval.
+* Repair revoked connections without losing agency details; retry setup separately.
+* Verify authenticated access during status checks so revoked credentials cannot appear healthy.
+* Create and edit post/page source, excerpts, slugs, status and UTC schedules.
+* Warn about unsaved content and detect changes made elsewhere before saving.
+* Prevent automatic replay of uncertain draft creation; confirm before trashing.
+* Search and paginate content, media, comments and users in smaller collections.
+* Add local redacted support diagnostics. No telemetry or new remote endpoints.
 
 = 0.8.0 =
 

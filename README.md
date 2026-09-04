@@ -34,28 +34,40 @@ Group related sites under a client name and Fleet builds a reusable workspace fo
 
 ## Manage the site in front of you
 
-Fleet has focused views for posts, pages, media details, comments, block-theme design, plugins, users, settings, and private agency notes. Common work stays clear and approachable. When you need something more advanced, Explorer can use any REST route that the connected WordPress site advertises, subject to that WordPress account’s normal capability checks.
+Write a draft, fix a page, schedule a post, or clear the comments waiting for approval—all from the right site's window. Searchable, paginated lists keep the work manageable as a site grows. The post and page editor works with HTML and WordPress block source; it is not the visual block editor.
+
+Clients use more than posts and pages. Fleet also discovers editable, REST-enabled content types such as events and portfolios, when they expose the standard WordPress content fields. Save your most-used content filters for each site—like pending reviews or this week's publishing—and reopen that work without rebuilding the search.
+
+Fleet also has focused views for media details, plugins, users, common settings, and private agency notes. Design shows available block-theme resources. For advanced work, Explorer can use REST routes the connected site advertises, subject to that WordPress account’s normal capability checks.
+
+If someone changes a post while you are editing, Fleet checks for that change before saving and keeps your submitted edits when it detects a conflict. Unsaved-change warnings help you avoid leaving work behind; they are not a replacement for backups or durable autosave.
 
 That means WordPress remains the source of truth. Fleet does not invent a second permissions system or require custom endpoints on client sites.
 
-![Managing publishing work for Harbor Arts Center without opening another wp-admin](assets/screenshots/managed-site.jpg)
+![Editing a Harbor Arts Center draft in its own named OpenStation window](assets/screenshots/content-editor.jpg)
+
+## Know what you are publishing—and where
+
+Before publishing or scheduling, Fleet shows the destination site, publishing time, and changes for review. Nothing is written until you confirm. If you need an earlier version, compare WordPress revisions and bring one back into the editor before deciding what to save.
+
+![Reviewing a change and its destination before saving to WordPress](assets/screenshots/publishing-review.jpg)
 
 ## One Fleet installation
 
-Fleet belongs only on the hub. A managed site needs WordPress Core, HTTPS, and an administrator who can approve the connection. During setup, Fleet can install or activate OpenStation on that site so it can open as a native desktop window; the Fleet plugin itself is never copied there.
+Fleet belongs only on the hub. A managed site needs WordPress Core, HTTPS, and an administrator who can approve the connection. Fleet checks the site before you approve, then offers a separate setup step to install or activate OpenStation there. The management window runs on your hub; the Fleet plugin itself is never copied to client sites.
 
-The approval happens on WordPress’s own Application Password screen. Fleet never receives the administrator’s normal password. WordPress creates a separate credential that can be revoked at any time, and Fleet encrypts its copy on the hub.
+The approval happens on WordPress’s own Application Password screen. Fleet never receives the administrator’s normal password. WordPress creates a separate administrator-level credential that can be revoked at any time, and Fleet encrypts its copy on the hub. These credentials do not automatically expire. If a connection breaks, repair it without losing your client notes and organization.
 
 ## Try Fleet
 
-Fleet currently requires WordPress 6.5 or newer, PHP 7.4 or newer, HTTPS, and an OpenStation build with the experimental App Framework.
+Fleet targets WordPress 7.1 or newer, PHP 8.3 or newer, HTTPS, and an OpenStation build with the experimental App Framework. Older WordPress versions are not supported.
 
-1. Download `fleet-for-openstation.zip` from the [latest release](https://github.com/RegionallyFamous/fleet-for-openstation/releases).
+1. Download `fleet-for-openstation.zip` from the [0.9.0-rc.1 release candidate](https://github.com/RegionallyFamous/fleet-for-openstation/releases/tag/v0.9.0-rc.1).
 2. Install OpenStation and Fleet on the WordPress site you want to use as the hub.
-3. Open **Fleet**, enter a client site’s HTTPS address, and approve the connection on that site.
-4. Return to Fleet and choose **Manage**.
+3. Open **Fleet**, enter a client site’s HTTPS address, choose **Check connection**, and review the approval on that site.
+4. Return to Fleet, choose **Finish setup**, and start managing its named window.
 
-Fleet is an early preview for hands-on testing. It does not replace backups, uptime monitoring, malware scanning, or a credential vault.
+Fleet is preparing for launch. Version `0.9.0-rc.1` is a pre-release for staging and pilot testing, not a general-availability release. Start with a [verified App Framework build](https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Framework-Integration). Fleet does not replace backups, uptime monitoring, malware scanning, or a credential vault.
 
 Detailed setup, security, architecture, API coverage, development, and troubleshooting notes live in the [Fleet wiki](https://github.com/RegionallyFamous/fleet-for-openstation/wiki). Found a rough edge? [Open an issue](https://github.com/RegionallyFamous/fleet-for-openstation/issues).
 

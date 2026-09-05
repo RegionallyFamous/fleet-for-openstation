@@ -42,12 +42,12 @@ Connection approval happens on WordPress's own Application Password screen. Flee
 
 Fleet targets WordPress 7.1 or newer, PHP 8.3 or newer, HTTPS, sodium, and an OpenStation build with the experimental App Framework. Older WordPress versions and a classic wp-admin fallback are intentionally unsupported.
 
-1. Download `fleet-for-openstation.zip` from the [0.10.0-alpha.1 reliability preview](https://github.com/RegionallyFamous/fleet-for-openstation/releases/tag/v0.10.0-alpha.1).
+1. Download `fleet-for-openstation.zip` from the [current 0.10.0 release](https://github.com/RegionallyFamous/fleet-for-openstation/releases/tag/v0.10.0).
 2. Install OpenStation and Fleet on the WordPress site you want to use as the hub.
 3. Open **Fleet**, enter a client site's HTTPS address, and choose **Check connection**.
 4. Approve the connection on that site, return to Fleet, and choose **Finish setup**.
 
-**0.10.0-alpha.1 is a public GitHub pre-release for development, staging, and agency pilots—not a general-availability release.** Its saved multi-window behavior is verified with the exact OpenStation build in [PR #763](https://github.com/WordPress/openstation/pull/763), but that fix is not yet part of a released OpenStation build. Long-duration and independent-hosting launch gates also remain open.
+**0.10.0 is the current release.** Its saved multi-window behavior is verified with the exact OpenStation build in [PR #763](https://github.com/WordPress/openstation/pull/763), but that fix is not yet part of a released OpenStation build. Use that exact build until a released OpenStation package contains the fix, and test the pair on staging before production use.
 
 For the details, use the [getting-started guide](https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Getting-Started), [management guide](https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Managing-Sites), [current capability map](https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Current-Scope), [security model](https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Security), [screenshot gallery](https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Screenshots), and [launch status](https://github.com/RegionallyFamous/fleet-for-openstation/wiki/Reliability-Milestone).
 

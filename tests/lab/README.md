@@ -2,7 +2,7 @@
 
 This is test infrastructure, never part of the plugin ZIP. It binds only to loopback and uses distinct HTTPS ports, databases, salts and content directories. Targets alternate MySQL 8.4 and MariaDB 11.4. Core files and the PHP/Apache pool are shared: **this is not independent hosting or WAN certification**.
 
-Prerequisites: Docker, Node, PHP, WP-CLI-compatible platform utilities, and a ZIP built from the exact OpenStation commit pinned in `.github/workflows/validate.yml`. The 0.10 preview currently pins the head of [OpenStation PR #763](https://github.com/WordPress/openstation/pull/763); replace that pin with the released containing commit after it lands. Run from the Fleet repository:
+Prerequisites: Docker, Node, PHP, WP-CLI-compatible platform utilities, and a ZIP built from the exact OpenStation commit pinned in `.github/workflows/validate.yml`. The 0.10 release currently pins the head of [OpenStation PR #763](https://github.com/WordPress/openstation/pull/763); replace that pin with the released containing commit after it lands. Run from the Fleet repository:
 
 ```sh
 npm ci

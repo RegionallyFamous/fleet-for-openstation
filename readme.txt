@@ -4,7 +4,7 @@ Tags: openstation, agency, site management, application passwords
 Requires at least: 7.1
 Tested up to: 7.1
 Requires PHP: 8.3
-Stable tag: 0.10.0-alpha.1
+Stable tag: 0.10.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -16,7 +16,7 @@ One WordPress site is easy. Ten unrelated client sites mean ten dashboards, ten 
 
 Fleet gives that work one home. One OpenStation install becomes the hub for every WordPress site you manage. See which sites need attention, open each site in its own clearly named window, and work without juggling bookmarks and wp-admin tabs.
 
-Version 0.10.0-alpha.1 is a public GitHub reliability preview for development, staging, and agency pilots. It is not a general-availability release. Its saved multi-window behavior is verified with the exact OpenStation build in PR #763, but that fix is not yet part of a released OpenStation build. Long-duration and independent-hosting launch gates remain open.
+Version 0.10.0 is the current release. Its saved multi-window behavior is verified with the exact OpenStation build in PR #763, but that fix is not yet part of a released OpenStation build. Use that exact build until a released OpenStation package contains the fix, and test the pair on staging before production use.
 
 = The work comes to you =
 
@@ -91,9 +91,9 @@ No. Fleet is a native App Framework application and intentionally has no classic
 
 == Changelog ==
 
-= 0.10.0-alpha.1 =
+= 0.10.0 =
 
-* Reliability preview: opt-in encrypted crash recovery, Core publishing options, media uploads, comment replies and reviewed bulk moderation.
+* Added opt-in encrypted crash recovery, Core publishing options, media uploads, comment replies and reviewed bulk moderation.
 * Explicit hub team roles with live revocation, cache freshness and retry visibility.
 * Mandatory browser CI and a disposable multi-origin MySQL/MariaDB load lab.
 * Verified saved multi-window identity with the exact OpenStation PR #763 build; an upstream release, long endurance run and independent hosting pilots remain launch gates.

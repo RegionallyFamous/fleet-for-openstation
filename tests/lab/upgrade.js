@@ -7,17 +7,26 @@ const { createHash, randomBytes } = require( 'node:crypto' );
 const root = path.join( __dirname, 'runtime' );
 const oldZip = path.join( root, 'upgrade/fleet-for-openstation.zip' );
 const currentZip = path.resolve( __dirname, '../../dist/fleet-for-openstation.zip' );
+const currentZipRuntime = path.join( root, 'upgrade/current-fleet-for-openstation.zip' );
 if ( process.env.FLEET_LAB_WRITES !== '1' || ! fs.existsSync( path.join( root, '.fleet-lab' ) ) || fs.existsSync( path.join( root, 'soak.lock' ) ) ) { throw new Error( 'Only a quiescent, marked disposable lab may be upgraded.' ); }
 assert.equal( createHash( 'sha256' ).update( fs.readFileSync( oldZip ) ).digest( 'hex' ), '16c4587da8fcaa9a7aa25c688a77a47cf67fc8284f71c6d9f0531d7791e55f0f' );
+fs.copyFileSync( currentZip, currentZipRuntime );
 process.env.FLEET_LAB_RUNNER = path.join( root, 'runner.json' );
 const runner = JSON.parse( fs.readFileSync( process.env.FLEET_LAB_RUNNER, 'utf8' ) );
 const { runSiteWp } = require( '../e2e/wordpress-fixture' );
 const hub = path.join( root, 'sites/site-0' );
 const wp = ( code ) => runSiteWp( hub, `wp_set_current_user( 1 ); ${ code }` );
-const plugin = path.join( hub, 'wp-content/plugins/fleet-for-openstation' );
 const run = ( command, args ) => execFileSync( command, args, { stdio: [ 'ignore', 'pipe', 'pipe' ], timeout: 60000 } );
 const install = ( zip ) => {
-	run( 'unzip', [ '-qo', zip, '-d', path.dirname( plugin ) ] );
+	const relative = path.relative( root, zip );
+	if ( ! relative || relative.startsWith( '..' ) || path.isAbsolute( relative ) ) {
+		throw new Error( 'Upgrade ZIP must be inside the marked lab runtime.' );
+	}
+	const containerZip = '/fleet/' + relative.split( path.sep ).join( '/' );
+	// Provisioning deliberately gives the web worker ownership of wp-content.
+	// Install as root inside the disposable container so Linux CI exercises a
+	// normal WordPress filesystem replacement instead of a host permission race.
+	run( 'docker', [ 'exec', '-e', 'FLEET_LAB_SITE=0', runner.container, 'wp', '--allow-root', '--path=/var/www/html', 'plugin', 'install', containerZip, '--force', '--activate' ] );
 	run( 'docker', [ 'exec', runner.container, 'find', '/fleet/sites/site-0/wp-content/plugins/fleet-for-openstation', '-type', 'f', '-exec', 'touch', '{}', '+' ] );
 	run( 'docker', [ 'exec', runner.container, 'apachectl', 'graceful' ] );
 };
@@ -36,7 +45,7 @@ try {
 	install( oldZip );
 	const before = wp( `$sites = OpenStation_Fleet_Repository::all( 1, array( 'OpenStation_Fleet', 'normalize_site_record' ) ); $hashes = array(); foreach( $sites as $id => $site ) { $hashes[$id] = hash( 'sha256', $site['secret'] . $site['connection_generation'] . wp_json_encode( $site['agency'] ) ); } update_option( 'fleet_lab_upgrade_hashes', $hashes, false ); echo 'FLEET_E2E_JSON:' . wp_json_encode( array( 'version' => OPENSTATION_FLEET_VERSION, 'count' => count( $sites ) ) );` );
 	assert.equal( before.version, '0.8.0' ); assert.ok( before.count >= 2 ); report.before = before;
-	install( currentZip );
+	install( currentZipRuntime );
 	const after = wp( `$sites = OpenStation_Fleet_Repository::all( 1, array( 'OpenStation_Fleet', 'normalize_site_record' ) ); $hashes = array(); foreach( $sites as $id => $site ) { $hashes[$id] = hash( 'sha256', $site['secret'] . $site['connection_generation'] . wp_json_encode( $site['agency'] ) ); } $same = $hashes === get_option( 'fleet_lab_upgrade_hashes' ); $first = reset( $sites ); $r = OpenStation_Fleet_REST_Client::request( $first, 'GET', 'wp/v2/users/me?context=edit&_fields=id' ); echo 'FLEET_E2E_JSON:' . wp_json_encode( array( 'version' => OPENSTATION_FLEET_VERSION, 'count' => count( $sites ), 'preserved' => $same, 'authenticated' => ! is_wp_error( $r ) && ! empty( $r['id'] ) ) );` );
 	assert.equal( after.count, before.count ); assert.equal( after.preserved, true ); assert.equal( after.authenticated, true ); report.after = after;
 	// Model a restored serialized encrypted record with and without the original salts.
@@ -60,8 +69,9 @@ try {
 	const hostDump = path.join( backupDir, 'hub.sql' );
 	if ( fs.existsSync( hostDump ) ) { fs.unlinkSync( hostDump ); }
 	fs.rmdirSync( backupDir );
-	install( currentZip );
+	install( currentZipRuntime );
 	wp( `delete_option( 'fleet_lab_upgrade_hashes' ); echo 'FLEET_E2E_JSON:true';` );
+	if ( fs.existsSync( currentZipRuntime ) ) { fs.unlinkSync( currentZipRuntime ); }
 	report.ended = new Date().toISOString(); fs.writeFileSync( path.join( root, 'upgrade-result.json' ), JSON.stringify( report, null, 2 ) + '\n' );
 	console.log( JSON.stringify( report ) );
 }

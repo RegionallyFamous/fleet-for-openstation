@@ -9,6 +9,11 @@ defined( 'ABSPATH' ) || exit;
 
 /** Content validation shared by the native editor and action boundary. */
 final class OpenStation_Fleet_Content {
+	/** Fields whose changes invalidate a pending editor or publishing review. */
+	const FIELDS = 'id,title,content,excerpt,slug,status,date_gmt,author,featured_media,categories,tags,comment_status,ping_status';
+
+	/** Optional Core publishing fields. */
+	const PUBLISHING = array( 'author', 'featured_media', 'categories', 'tags', 'comment_status', 'ping_status' );
 
 	/**
 	 * Extract only editable fields, preserving WordPress block markup verbatim.
@@ -45,6 +50,37 @@ final class OpenStation_Fleet_Content {
 		if ( 'future' === $body['status'] && ( empty( $body['date_gmt'] ) || strtotime( $body['date_gmt'] . 'Z' ) <= time() + 60 ) ) {
 			return new WP_Error( 'fleet_content_schedule', __( 'Scheduled content needs a UTC date more than one minute in the future.', 'fleet-for-openstation' ) );
 		}
+		foreach ( self::PUBLISHING as $key ) {
+			if ( ! array_key_exists( $key, $values ) ) {
+				continue;
+			}
+			$value = $values[ $key ];
+			if ( ! is_string( $value ) || strlen( $value ) > 2000 ) {
+				return new WP_Error( 'fleet_publishing_invalid', __( 'Choose valid publishing options.', 'fleet-for-openstation' ) );
+			}
+			if ( in_array( $key, array( 'categories', 'tags' ), true ) ) {
+				if ( '' !== $value && ! preg_match( '/\A[1-9][0-9]{0,9}(?:,[1-9][0-9]{0,9}){0,99}\z/', $value ) ) {
+					return new WP_Error( 'fleet_publishing_terms', __( 'Choose up to 100 valid terms.', 'fleet-for-openstation' ) );
+				}
+				$body[ $key ] = '' === $value ? array() : array_values( array_unique( array_map( 'intval', explode( ',', $value ) ) ) );
+			} elseif ( in_array( $key, array( 'author', 'featured_media' ), true ) ) {
+				if ( '' === $value || ( 'author' === $key && '0' === $value ) ) {
+					continue;
+				}
+				if ( ! preg_match( '/\A[0-9]{1,10}\z/', $value ) || ( 'author' === $key && (int) $value < 1 ) ) {
+					return new WP_Error( 'fleet_publishing_id', __( 'Choose a valid author or image.', 'fleet-for-openstation' ) );
+				}
+				$body[ $key ] = (int) $value;
+			} else {
+				if ( '' === $value ) {
+					continue;
+				}
+				if ( ! in_array( $value, array( 'open', 'closed' ), true ) ) {
+					return new WP_Error( 'fleet_publishing_discussion', __( 'Choose open or closed discussion.', 'fleet-for-openstation' ) );
+				}
+				$body[ $key ] = $value;
+			}
+		}
 		return $body;
 	}
 
@@ -65,7 +101,7 @@ final class OpenStation_Fleet_Content {
 	 * @return array
 	 */
 	public static function editable( $item ) {
-		return array(
+		$result = array(
 			'title'    => isset( $item['title']['raw'] ) ? $item['title']['raw'] : '',
 			'content'  => isset( $item['content']['raw'] ) ? $item['content']['raw'] : '',
 			'excerpt'  => isset( $item['excerpt']['raw'] ) ? $item['excerpt']['raw'] : '',
@@ -73,6 +109,18 @@ final class OpenStation_Fleet_Content {
 			'status'   => isset( $item['status'] ) ? $item['status'] : 'draft',
 			'date_gmt' => isset( $item['date_gmt'] ) ? $item['date_gmt'] : '',
 		);
+		foreach ( self::PUBLISHING as $key ) {
+			if ( array_key_exists( $key, $item ) ) {
+				$value = $item[ $key ];
+				if ( in_array( $key, array( 'categories', 'tags' ), true ) ) {
+					$value = array_map( 'intval', (array) $value );
+					sort( $value, SORT_NUMERIC );
+					$value = implode( ',', $value );
+				}
+				$result[ $key ] = (string) $value;
+			}
+		}
+		return $result;
 	}
 
 	/**
@@ -108,9 +156,10 @@ final class OpenStation_Fleet_Content {
 			$key            = in_array( $slug, array( 'posts', 'pages' ), true ) ? 'wp_type_' . $slug : $slug;
 			$key            = 'post' === $slug ? 'posts' : ( 'page' === $slug ? 'pages' : $key );
 			$result[ $key ] = array(
-				'route'    => $route,
-				'name'     => sanitize_text_field( isset( $type['name'] ) ? $type['name'] : $slug ),
-				'supports' => array_intersect_key( $type['supports'], array_flip( array( 'title', 'editor', 'excerpt', 'revisions' ) ) ),
+				'route'      => $route,
+				'name'       => sanitize_text_field( isset( $type['name'] ) ? $type['name'] : $slug ),
+				'supports'   => array_intersect_key( $type['supports'], array_flip( array( 'title', 'editor', 'excerpt', 'revisions', 'author', 'thumbnail', 'comments' ) ) ),
+				'taxonomies' => array_values( array_intersect( (array) ( $type['taxonomies'] ?? array() ), array( 'category', 'post_tag' ) ) ),
 			);
 		}
 		return $result;
@@ -127,7 +176,7 @@ final class OpenStation_Fleet_Content {
 	 */
 	public static function review_token( $site, $values, $expires ) {
 		$payload = array( 'fleet-content-review', get_current_blog_id(), get_current_user_id(), $site['site_url'], $site['connection_generation'], (int) $expires );
-		foreach ( array( 'content_type', 'content_id', 'fingerprint', 'request_id', 'title', 'content', 'excerpt', 'slug', 'status', 'date_gmt' ) as $key ) {
+		foreach ( array_merge( array( 'content_type', 'content_id', 'fingerprint', 'request_id', 'title', 'content', 'excerpt', 'slug', 'status', 'date_gmt' ), self::PUBLISHING ) as $key ) {
 			$payload[] = isset( $values[ $key ] ) ? (string) $values[ $key ] : '';
 		}
 		return hash_hmac( 'sha256', (string) wp_json_encode( $payload ), wp_salt( 'auth' ) );

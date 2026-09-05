@@ -1,4 +1,4 @@
-( function () {
+window.wp.os.ready( function () {
 	'use strict';
 
 	if ( window.__openStationFleetEffects ) {
@@ -161,6 +161,130 @@
 	// Unsaved content stays in this page's memory, never in localStorage or cookies.
 	const dirtyWindows = new Set();
 	const windowElement = ( element ) => element?.closest?.( '.os-window' );
+	const appWindowId = ( element ) => window.wp.os.windowManager.getAll().find( ( win ) => win.element === windowElement( element ) )?.id;
+	const recovery = new Map();
+	const uploads = new Set();
+	document.addEventListener( 'click', async ( event ) => {
+		const button = event.target.closest?.( '.fleet-native-upload-send' );
+		if ( ! button ) { return; }
+		const panel = button.closest( '.fleet-native-upload' );
+		const file = panel.querySelector( 'input[type="file"]' ).files[ 0 ];
+		const status = panel.querySelector( '.fleet-native-upload-status' );
+		if ( ! file || file.size < 1 || file.size > 2097152 ) { status.textContent = 'Choose one file between 1 byte and 2 MB.'; return; }
+		const owner = windowElement( panel );
+		if ( uploads.has( owner.id ) ) { return; }
+		uploads.add( owner.id );
+		button.setAttribute( 'busy', '' );
+		try {
+			const accepted = await window.wp.os.confirm( { title: 'Upload to this site?', message: `${ file.name } will be uploaded to the site named in this window.`, confirmLabel: 'Upload' } );
+			if ( ! accepted ) { return; }
+			status.textContent = 'Uploading… Keep this window open.';
+			const bytes = await new Promise( ( resolve, reject ) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve( String( reader.result ).split( ',' )[ 1 ] );
+				reader.onerror = reject;
+				reader.readAsDataURL( file );
+			} );
+			const ok = await window.wp.os.apps.dispatch( appWindowId( panel ), 'upload-media', { filename: file.name, bytes, request_id: button.dataset.requestId }, 'media' );
+			if ( ! ok && status.isConnected ) { status.textContent = 'Upload result unknown. Check the media library before selecting this file again.'; }
+		} catch ( error ) {
+			if ( status.isConnected ) { status.textContent = 'The file could not be read or the upload was interrupted. Check the library before trying again.'; }
+		} finally {
+			uploads.delete( owner.id );
+			button.removeAttribute( 'busy' );
+		}
+	} );
+	const editorFor = ( element ) => element.closest( '.os-window' )?.querySelector( '.fleet-native-editor' );
+	const publishingDispatch = ( element, args ) => {
+		const form = editorFor( element );
+		if ( ! form ) { return; }
+		window.wp.os.apps.dispatch( appWindowId( form ), 'publishing-options', { ...args, draft: form.getValues() }, 'content' );
+	};
+	document.addEventListener( 'os-form-submit', ( event ) => {
+		if ( event.target.matches?.( '.fleet-native-bulk-comments' ) ) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const ids = Array.from( event.target.querySelectorAll( 'input[type="checkbox"]:checked' ), ( input ) => input.value );
+			window.wp.os.apps.dispatch( appWindowId( event.target ), 'review-comments', { ...event.detail.values, ids }, 'comments' );
+			return;
+		}
+		if ( ! event.target.matches?.( '.fleet-native-picker-search' ) ) { return; }
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		publishingDispatch( event.target, event.detail.values );
+	}, true );
+	document.addEventListener( 'click', ( event ) => {
+		const target = event.target.closest?.( '.fleet-native-picker-open,.fleet-native-pick-item,.fleet-native-pick-clear,.fleet-native-picker-page' );
+		if ( ! target ) { return; }
+		event.preventDefault();
+		const form = editorFor( target );
+		if ( ! form || form.closest( '[data-os-app]' )?.getAttribute( 'aria-busy' ) === 'true' ) { return; }
+		if ( target.matches( '.fleet-native-picker-open' ) ) {
+			publishingDispatch( target, { kind: target.dataset.kind } );
+			return;
+		}
+		const picker = target.closest( '.fleet-native-publishing-picker' );
+		const kind = picker.dataset.kind;
+		if ( target.matches( '.fleet-native-picker-page' ) ) {
+			publishingDispatch( target, { ...picker.querySelector( 'os-form' ).getValues(), page: target.dataset.page } );
+			return;
+		}
+		const input = form.querySelector( `[name="${ kind }"]` );
+		if ( ! input ) { return; }
+		const multiple = kind === 'categories' || kind === 'tags';
+		if ( target.matches( '.fleet-native-pick-clear' ) ) {
+			input.value = kind === 'featured_media' ? '0' : '';
+		} else if ( multiple ) {
+			const ids = new Set( input.value.split( ',' ).filter( Boolean ) );
+			ids.has( target.dataset.id ) ? ids.delete( target.dataset.id ) : ids.add( target.dataset.id );
+			input.value = Array.from( ids ).sort( ( a, b ) => Number( a ) - Number( b ) ).join( ',' );
+		} else {
+			input.value = target.dataset.id;
+		}
+		form.querySelector( `[data-publishing-value="${ kind }"]` ).textContent = multiple ? input.value.split( ',' ).filter( Boolean ).map( ( id ) => `#${ id }` ).join( ', ' ) || 'None selected' : target.matches( '.fleet-native-pick-clear' ) ? 'Not selected' : target.textContent.trim();
+		dirtyWindows.add( windowElement( form ).id );
+		form.dispatchEvent( new CustomEvent( 'os-form-input', { bubbles: true, detail: { form } } ) );
+	} );
+	// Core Heartbeat saves encrypted checkpoints without morphing live editor DOM.
+	// Source is never written to browser storage, cookies, or OpenStation settings.
+	document.addEventListener( 'change', ( event ) => {
+		if ( ! event.target.matches?.( '.fleet-native-recovery-enable' ) ) { return; }
+		const form = editorFor( event.target );
+		const id = windowElement( form ).id;
+		if ( event.target.checked ) {
+			recovery.set( id, { form, sequence: Date.now(), last: '', pending: '' } );
+			form.querySelector( '.fleet-native-recovery-status' ).textContent = 'Waiting for a WordPress heartbeat…';
+			window.wp.heartbeat.connectNow();
+		} else {
+			recovery.delete( id );
+			form.querySelector( '.fleet-native-recovery-status' ).textContent = 'Off · Existing checkpoints expire after seven days or can be deleted from the content list.';
+		}
+	} );
+	window.jQuery( document ).on( 'heartbeat-send.fleet', ( event, data ) => {
+		const payload = {};
+		for ( const [ id, item ] of recovery ) {
+			if ( ! item.form.isConnected ) { recovery.delete( id ); continue; }
+			if ( Object.keys( payload ).length >= 5 ) { break; }
+			const values = item.form.getValues();
+			const json = JSON.stringify( values );
+			if ( json === item.last ) { continue; }
+			item.pending = json;
+			item.sequence += 1;
+			payload[ id ] = { ...values, original_status: window.wp.os.apps.session( appWindowId( item.form ), 'content' )?.state.editor.original_status || 'draft', enabled: true, sequence: item.sequence, site_id: item.form.dataset.siteId, connection: item.form.dataset.connection };
+		}
+		if ( Object.keys( payload ).length ) { data.fleet_recovery = payload; }
+	} ).on( 'heartbeat-tick.fleet', ( event, data ) => {
+		for ( const [ id, result ] of Object.entries( data.fleet_recovery || {} ) ) {
+			const item = recovery.get( id );
+			if ( ! item?.form.isConnected ) { continue; }
+			item.form.querySelector( '.fleet-native-recovery-status' ).textContent = result.error || `Recovery copy saved at ${ new Date( result.saved * 1000 ).toLocaleTimeString() }. Not saved to WordPress.`;
+			if ( ! result.error ) { item.last = item.pending; }
+		}
+	} ).on( 'heartbeat-error.fleet', () => {
+		for ( const item of recovery.values() ) {
+			if ( item.form.isConnected ) { item.form.querySelector( '.fleet-native-recovery-status' ).textContent = 'Recovery unavailable. Keep this window open and save or copy your source.'; }
+		}
+	} );
 	const confirmDiscard = () => window.wp.os.confirm( {
 		title: 'Discard unsaved changes?',
 		message: 'Your content has not been saved to WordPress. Stay here to save it or copy your changes first.',
@@ -281,4 +405,4 @@
 			}
 		}
 	} );
-} )();
+} );

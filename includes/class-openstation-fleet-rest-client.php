@@ -13,6 +13,52 @@ defined( 'ABSPATH' ) || exit;
 final class OpenStation_Fleet_REST_Client {
 	const REQUEST_TIMEOUT = 12;
 	const RESPONSE_LIMIT  = 2097152;
+	const UPLOAD_LIMIT    = 2097152;
+
+	/**
+	 * Validate a bounded file, then let Core enforce remote upload permissions.
+	 *
+	 * @param array $values Filename and base64 bytes from the selected local file.
+	 * @return array|WP_Error
+	 */
+	public static function upload_body( $values ) {
+		if ( ! is_string( $values['filename'] ?? null ) || ! is_string( $values['bytes'] ?? null ) || strlen( $values['filename'] ) > 200 || strlen( $values['bytes'] ) > 2796204 ) {
+			return new WP_Error( 'fleet_upload_size', __( 'Choose one file no larger than 2 MB.', 'fleet-for-openstation' ) );
+		}
+		$filename = sanitize_file_name( $values['filename'] );
+		$type     = wp_check_filetype( $filename, get_allowed_mime_types() );
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Files cross the existing JSON app dispatch; this is not executable code.
+		$bytes = base64_decode( $values['bytes'], true );
+		if ( ! $type['type'] || ! is_string( $bytes ) || '' === $bytes || strlen( $bytes ) > self::UPLOAD_LIMIT ) {
+			return new WP_Error( 'fleet_upload_type', __( 'This file is empty, too large, or not an allowed WordPress file type.', 'fleet-for-openstation' ) );
+		}
+		if ( 0 === strpos( $type['type'], 'image/' ) ) {
+			$size = @getimagesizefromstring( $bytes ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Malformed uploads must return a controlled error, not PHP warnings.
+			if ( ! $size || $size['mime'] !== $type['type'] ) {
+				return new WP_Error( 'fleet_upload_image', __( 'The file contents do not match its image type.', 'fleet-for-openstation' ) );
+			}
+			if ( $size[0] * $size[1] > 40000000 || max( $size[0], $size[1] ) > 20000 ) {
+				return new WP_Error( 'fleet_upload_dimensions', __( 'Resize this image below 40 megapixels and 20,000 pixels per side before uploading.', 'fleet-for-openstation' ) );
+			}
+		}
+		return array(
+			'filename' => $filename,
+			'type'     => $type['type'],
+			'bytes'    => $bytes,
+		);
+	}
+
+	/**
+	 * Send raw file bytes to the existing Core media endpoint.
+	 *
+	 * @param array $site Connection.
+	 * @param array $upload Validated file.
+	 * @return array|WP_Error
+	 */
+	public static function upload( $site, $upload ) {
+		// translators: %d: HTTP status code.
+		return self::decode( self::send( $site, 'POST', 'wp/v2/media', null, null, $upload ), 'fleet_upload_remote', __( 'WordPress returned HTTP %d for this upload.', 'fleet-for-openstation' ) );
+	}
 
 	/**
 	 * Send an authenticated Core REST request.
@@ -67,9 +113,13 @@ final class OpenStation_Fleet_REST_Client {
 	 * @param string     $path REST route.
 	 * @param array|null $body Optional JSON body.
 	 * @param int|null   $timeout Optional request timeout in seconds.
+	 * @param array|null $upload Validated raw upload, instead of JSON.
 	 * @return array|WP_Error
 	 */
-	private static function send( $site, $method, $path, $body = null, $timeout = null ) {
+	private static function send( $site, $method, $path, $body = null, $timeout = null, $upload = null ) {
+		if ( ! empty( $site['_fleet_alias'] ) && ! OpenStation_Fleet_Access::allowed( $site, $site['_fleet_operation'] ?? 'overview', ! empty( $site['_fleet_write'] ) ) ) {
+			return new WP_Error( 'fleet_share_revoked', __( 'Your shared access changed. Ask the connection owner before continuing.', 'fleet-for-openstation' ) );
+		}
 		$credential = OpenStation_Fleet_Crypto::open( isset( $site['secret'] ) ? (string) $site['secret'] : '' );
 		if ( is_wp_error( $credential ) ) {
 			return $credential;
@@ -91,6 +141,12 @@ final class OpenStation_Fleet_REST_Client {
 			$args['headers']['Content-Type'] = 'application/json';
 			$args['body']                    = wp_json_encode( $body );
 			$args['data_format']             = 'body';
+		}
+		if ( null !== $upload ) {
+			$args['headers']['Content-Type']        = $upload['type'];
+			$args['headers']['Content-Disposition'] = 'attachment; filename="' . str_replace( array( '"', "\r", "\n" ), '', $upload['filename'] ) . '"';
+			$args['body']                           = $upload['bytes'];
+			$args['data_format']                    = 'body';
 		}
 
 		$response = self::safe_request( self::api_url( $site, $path ), $args, $site['site_url'] );

@@ -20,7 +20,7 @@ $openstation_fleet_app = App::define( 'fleet-for-openstation' )
 	->min_size( 680, 500 )
 	->placement( 'dock' )
 	->dock_order( 58 )
-	->capabilities( OpenStation_Fleet::CAPABILITY )
+	->can( array( 'OpenStation_Fleet', 'can_use' ) )
 	->watch( 'fleet' )
 	->style( OPENSTATION_FLEET_DIR . 'assets/fleet-app.css' )
 	->state(

@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-find . -path './.git' -prune -o -path './dist' -prune -o -path './node_modules' -prune \
+find . -path './.git' -prune -o -path './dist' -prune -o -path './node_modules' -prune -o -path './tests/lab/runtime' -prune \
 	-o -path './vendor' -prune -o -path './plugin-check-build' -prune \
 	-o -name '*.php' -print0 \
 	| xargs -0 -n1 php -l >/dev/null
@@ -12,6 +12,7 @@ php bin/check-version.php
 php -d zend.assertions=1 -d assert.exception=1 tests/smoke.php
 php -d zend.assertions=1 -d assert.exception=1 tests/search-index.php
 node --check assets/fleet-app.js
+node tests/bridge-bootstrap.js
 
 stage_root=$(mktemp -d)
 trap 'rm -rf "$stage_root"' EXIT

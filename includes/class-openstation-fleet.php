@@ -13,6 +13,8 @@ require_once __DIR__ . '/class-openstation-fleet-rest-client.php';
 require_once __DIR__ . '/class-openstation-fleet-search-index.php';
 require_once __DIR__ . '/class-openstation-fleet-sync-policy.php';
 require_once __DIR__ . '/class-openstation-fleet-content.php';
+require_once __DIR__ . '/class-openstation-fleet-recovery.php';
+require_once __DIR__ . '/class-openstation-fleet-access.php';
 
 /**
  * Implements the experimental Fleet feature with WordPress Core primitives.
@@ -26,6 +28,20 @@ final class OpenStation_Fleet {
 	const PREVIOUS_CRON_SCHEDULE = 'openstation_fleet_15_minutes';
 	const CRON_CURSOR            = 'openstation_fleet_scheduled_check_cursor';
 	const DISCOVERY_LIMIT        = 4_194_304;
+
+	/** App entry gate: owners or explicitly delegated, authenticated hub accounts.
+	 *
+	 * @return bool
+	 */
+	public static function can_use() {
+		if ( current_user_can( self::CAPABILITY ) ) {
+			return true; }
+		foreach ( OpenStation_Fleet_Access::ids() as $id ) {
+			if ( OpenStation_Fleet_Access::resolve( $id ) ) {
+				return true; }
+		}
+		return false;
+	}
 
 	/**
 	 * Register Fleet's native apps, authorization callback, and scheduled checks.
@@ -43,6 +59,9 @@ final class OpenStation_Fleet {
 		add_action( 'admin_init', array( __CLASS__, 'add_privacy_policy_content' ) );
 		add_action( self::CRON_HOOK, array( __CLASS__, 'run_scheduled_checks' ) );
 		add_action( 'admin_post_openstation_fleet_authorized', array( __CLASS__, 'handle_authorized' ) );
+		add_filter( 'heartbeat_received', array( __CLASS__, 'recovery_heartbeat' ), 10, 2 );
+		add_action( 'delete_user', array( 'OpenStation_Fleet_Recovery', 'erase' ) );
+		add_action( 'delete_user', array( 'OpenStation_Fleet_Access', 'delete_user' ) );
 
 		$next = wp_next_scheduled( self::CRON_HOOK );
 		if ( $next ) {
@@ -66,7 +85,7 @@ final class OpenStation_Fleet {
 		if ( ! class_exists( '\\OpenStation\\App' ) || ! class_exists( '\\OpenStation\\App\\Os' ) || ! class_exists( '\\OpenStation\\App\\State' ) ) {
 			return false;
 		}
-		foreach ( array( 'define', 'title', 'icon', 'size', 'min_size', 'placement', 'placeable', 'capabilities', 'style', 'state', 'mount', 'title_bar_button', 'window_action', 'view', 'tab', 'action', 'dock_order', 'watch' ) as $method ) {
+		foreach ( array( 'define', 'title', 'icon', 'size', 'min_size', 'placement', 'placeable', 'can', 'style', 'state', 'mount', 'title_bar_button', 'window_action', 'view', 'tab', 'action', 'dock_order', 'watch' ) as $method ) {
 			if ( ! method_exists( '\\OpenStation\\App', $method ) ) {
 				return false;
 			}
@@ -129,7 +148,7 @@ final class OpenStation_Fleet {
 		wp_register_script(
 			'fleet-for-openstation-app',
 			OPENSTATION_FLEET_URL . 'assets/fleet-app.js',
-			array( 'openstation-app-runtime' ),
+			array( 'openstation-app-runtime', 'heartbeat' ),
 			OPENSTATION_FLEET_VERSION,
 			true
 		);
@@ -209,7 +228,7 @@ final class OpenStation_Fleet {
 	public static function add_privacy_policy_content() {
 		wp_add_privacy_policy_content(
 			__( 'Fleet for OpenStation', 'fleet-for-openstation' ),
-			wp_kses_post( __( 'Fleet stores each administrator’s connected-site URLs, remote usernames, encrypted Application Password credentials, client labels, private notes, and recent Fleet activity in that administrator’s user metadata. It sends authenticated requests only to sites that administrator connects. Fleet includes no telemetry or third-party tracking. Disconnect a site before removing Fleet to revoke its remote credential.', 'fleet-for-openstation' ) )
+			wp_kses_post( __( 'Fleet stores connection URLs, remote usernames, encrypted Application Passwords, client labels, private notes, recent activity, and explicit team grants on this hub. Optional encrypted draft recovery copies expire after seven days; up to ten copies of 200 KB per user are retained. Recovery does not publish content. Shared workflows authenticate remotely as the connection owner’s approved WordPress account, not as a separate remote teammate. Fleet includes no telemetry or third-party tracking. Disconnect sites before removing Fleet to revoke remote credentials. Verified WordPress personal-data exports and erasure include Fleet’s user data and recovery copies.', 'fleet-for-openstation' ) )
 		);
 	}
 
@@ -228,7 +247,7 @@ final class OpenStation_Fleet {
 			);
 		}
 
-		$data  = array();
+		$data  = array_merge( OpenStation_Fleet_Recovery::export( $user->ID ), OpenStation_Fleet_Access::export( $user->ID ) );
 		$sites = OpenStation_Fleet_Repository::all( $user->ID, array( __CLASS__, 'normalize_site_record' ) );
 		foreach ( $sites as $site_id => $site ) {
 			$site   = self::normalize_site_record( is_array( $site ) ? $site : array() );
@@ -297,8 +316,10 @@ final class OpenStation_Fleet {
 			);
 		}
 		delete_user_meta( $user->ID, OpenStation_Fleet_Repository::activity_meta_key() );
+		OpenStation_Fleet_Recovery::erase( $user->ID );
+		$grants_removed = OpenStation_Fleet_Access::erase( $user->ID );
 		delete_user_meta( $user->ID, OpenStation_Fleet_Repository::app_id_meta_key() );
-		if ( ! OpenStation_Fleet_Repository::delete_all( $user->ID ) ) {
+		if ( ! OpenStation_Fleet_Repository::delete_all( $user->ID ) || ! $grants_removed ) {
 			return array(
 				'items_removed'  => false,
 				'items_retained' => true,
@@ -611,7 +632,7 @@ final class OpenStation_Fleet {
 
 		foreach ( $site_ids as $id ) {
 			$site = self::get_site( $id );
-			if ( ! is_array( $site ) ) {
+			if ( ! is_array( $site ) || ! OpenStation_Fleet_Access::allowed( $site, 'overview' ) ) {
 				continue;
 			}
 			$attention        = self::attention_reasons( $site );
@@ -688,6 +709,7 @@ final class OpenStation_Fleet {
 			}
 		);
 		uksort( $model['workspaces'], 'strnatcasecmp' );
+		$model['counts']['sites'] = count( $model['sites'] );
 
 		return $model;
 	}
@@ -701,11 +723,12 @@ final class OpenStation_Fleet {
 	public static function app_site( $id ) {
 		$id   = sanitize_key( $id );
 		$site = self::get_site( $id );
-		if ( '' === $id || ! is_array( $site ) ) {
+		if ( '' === $id || ! is_array( $site ) || ! OpenStation_Fleet_Access::allowed( $site, 'overview' ) ) {
 			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
 		}
 		return array(
 			'id'                => $id,
+			'access_role'       => $site['_fleet_role'] ?? 'owner',
 			'name'              => sanitize_text_field( $site['name'] ),
 			'url'               => esc_url_raw( $site['site_url'] ),
 			'host'              => sanitize_text_field( (string) wp_parse_url( $site['site_url'], PHP_URL_HOST ) ),
@@ -715,6 +738,7 @@ final class OpenStation_Fleet {
 			'openstation'       => isset( $site['openstation'] ) && is_array( $site['openstation'] ) ? $site['openstation'] : array( 'status' => 'unknown' ),
 			'setup_status'      => sanitize_key( isset( $site['setup_status'] ) ? $site['setup_status'] : 'ready' ),
 			'last_checked'      => absint( isset( $site['last_checked'] ) ? $site['last_checked'] : 0 ),
+			'sync'              => self::sync_status( $site ),
 			'error'             => sanitize_text_field( isset( $site['error'] ) ? $site['error'] : '' ),
 			'attention'         => self::attention_reasons( $site ),
 			'capabilities'      => isset( $site['capabilities'] ) && is_array( $site['capabilities'] ) ? $site['capabilities'] : array(),
@@ -756,6 +780,28 @@ final class OpenStation_Fleet {
 	}
 
 	/**
+	 * Explain cache freshness, retry delay and cron liveness without remote calls.
+	 *
+	 * @param array $site Connection record.
+	 * @return array
+	 */
+	public static function sync_status( $site ) {
+		$now  = time();
+		$next = wp_next_scheduled( self::CRON_HOOK );
+		$run  = get_option( 'openstation_fleet_last_sync_run', array() );
+		return array(
+			'status_checked'   => absint( $site['status_checked'] ?? 0 ),
+			'metadata_checked' => absint( $site['metadata_checked'] ?? 0 ),
+			'health_checked'   => absint( $site['health_checked'] ?? 0 ),
+			'next_retry'       => absint( $site['next_retry'] ?? 0 ),
+			'failures'         => absint( $site['sync_failures'] ?? 0 ),
+			'queued'           => OpenStation_Fleet_Sync_Policy::due( $site, 'status', $now ),
+			'cron_stalled'     => ! $next || $next < $now - 600,
+			'last_run'         => absint( is_array( $run ) ? ( $run['finished'] ?? 0 ) : 0 ),
+		);
+	}
+
+	/**
 	 * Load the remote data required by one native managed-site tab.
 	 *
 	 * @param string $id      Site id.
@@ -764,12 +810,16 @@ final class OpenStation_Fleet {
 	 * @return array|WP_Error
 	 */
 	public static function app_site_data( $id, $section, $options = array() ) {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
+		if ( ! self::can_use() ) {
 			return new WP_Error( 'openstation_fleet_forbidden', __( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
 		}
 		$id      = sanitize_key( $id );
 		$section = sanitize_key( $section );
 		$site    = self::get_site( $id );
+		if ( ! OpenStation_Fleet_Access::allowed( $site, $section ) ) {
+			return new WP_Error( 'fleet_role_forbidden', __( 'This section is not available to your Fleet role.', 'fleet-for-openstation' ) );
+		}
+		$site['_fleet_operation'] = $section;
 		if ( '' === $id || ! is_array( $site ) ) {
 			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
 		}
@@ -860,7 +910,7 @@ final class OpenStation_Fleet {
 		$route = $descriptor['route'];
 		$id    = isset( $options['selected'] ) ? absint( $options['selected'] ) : 0;
 		if ( 'content' === $section && $id ) {
-			$item = self::remote_request( $site, 'GET', $route . '/' . $id . '?context=edit&_fields=id,title,content,excerpt,slug,status,date_gmt,modified_gmt' );
+			$item = self::remote_request( $site, 'GET', $route . '/' . $id . '?context=edit&_fields=' . OpenStation_Fleet_Content::FIELDS );
 			return is_wp_error( $item ) ? $item : array(
 				'item'       => $item,
 				'type'       => $type,
@@ -925,7 +975,7 @@ final class OpenStation_Fleet {
 		if ( ! OpenStation_Fleet_Content::valid_type( $type ) ) {
 			return new WP_Error( 'fleet_content_type', __( 'Choose a supported content type.', 'fleet-for-openstation' ) );
 		}
-		$types = self::app_site_data( self::site_id( $site['site_url'] ), 'content-types' );
+		$types = self::app_site_data( $site['_fleet_alias'] ?? self::site_id( $site['site_url'] ), 'content-types' );
 		if ( is_wp_error( $types ) || ! isset( $types[ $type ] ) ) {
 			return is_wp_error( $types ) ? $types : new WP_Error( 'fleet_content_type', __( 'This content type is not exposed for editing by the connected account.', 'fleet-for-openstation' ) );
 		}
@@ -943,6 +993,237 @@ final class OpenStation_Fleet {
 			}
 		}
 		return $descriptor;
+	}
+
+	/**
+	 * Bounded, searchable Core publishing choices. No managed-site extension.
+	 *
+	 * @param string $id Connection id.
+	 * @param array  $values Kind, search and page.
+	 * @return array|WP_Error
+	 */
+	public static function publishing_options( $id, $values ) {
+		$site = self::get_site( $id );
+		if ( ! OpenStation_Fleet_Access::allowed( $site, 'content', true ) ) {
+			return new WP_Error( 'fleet_options_forbidden', __( 'This connection is unavailable.', 'fleet-for-openstation' ) );
+		}
+		$site['_fleet_operation'] = 'content';
+		$site['_fleet_write']     = true;
+		$kind                     = is_string( $values['kind'] ?? null ) ? $values['kind'] : '';
+		$routes                   = array(
+			'author'         => 'users',
+			'featured_media' => 'media',
+			'categories'     => 'categories',
+			'tags'           => 'tags',
+		);
+		if ( ! isset( $routes[ $kind ] ) ) {
+			return new WP_Error( 'fleet_options_kind', __( 'Choose a publishing field.', 'fleet-for-openstation' ) );
+		}
+		$query = array(
+			'context'  => 'edit',
+			'per_page' => 25,
+			'page'     => max( 1, min( 10000, (int) ( $values['page'] ?? 1 ) ) ),
+			'_fields'  => 'id,name,title',
+		);
+		if ( 'featured_media' === $kind ) {
+			$query['media_type'] = 'image';
+		}
+		if ( 'author' === $kind ) {
+			$query['who'] = 'authors';
+		}
+		$query['search'] = sanitize_text_field( is_string( $values['search'] ?? null ) ? substr( $values['search'], 0, 200 ) : '' );
+		$result          = OpenStation_Fleet_REST_Client::request_envelope( $site, 'GET', 'wp/v2/' . $routes[ $kind ] . '?' . http_build_query( $query, '', '&' ) );
+		return is_wp_error( $result ) ? $result : array_merge(
+			$result,
+			array(
+				'kind'   => $kind,
+				'search' => $query['search'],
+				'page'   => $query['page'],
+			)
+		);
+	}
+
+	/**
+	 * Bind recovery to a user and the currently authorized connection.
+	 *
+	 * @param string $id Connection id.
+	 * @return string
+	 */
+	public static function recovery_context( $id ) {
+		$site = self::get_site( $id );
+		return $site ? hash_hmac( 'sha256', get_current_user_id() . ':' . $site['site_url'] . ':' . $site['connection_generation'], wp_salt( 'auth' ) ) : '';
+	}
+
+	/**
+	 * Use Core's nonce-protected Heartbeat; do not repaint an editor being typed in.
+	 *
+	 * @param array $response Heartbeat response.
+	 * @param array $data Untrusted heartbeat payload.
+	 * @return array
+	 */
+	public static function recovery_heartbeat( $response, $data ) {
+		if ( ! self::can_use() || ! is_array( $data['fleet_recovery'] ?? null ) ) {
+			return $response;
+		}
+		$response['fleet_recovery'] = array();
+		foreach ( array_slice( $data['fleet_recovery'], 0, 5, true ) as $window => $values ) {
+			if ( ! is_array( $values ) || ! is_string( $window ) || strlen( $window ) > 100 ) {
+				continue;
+			}
+			$id   = is_string( $values['site_id'] ?? null ) ? sanitize_key( $values['site_id'] ) : '';
+			$site = self::get_site( $id );
+			if ( ! OpenStation_Fleet_Access::allowed( $site, 'recovery', true ) || ! is_string( $values['connection'] ?? null ) || ! hash_equals( self::recovery_context( $id ), $values['connection'] ) ) {
+				$result = new WP_Error( 'fleet_recovery_connection', __( 'The connection changed. Recovery is paused; copy your source before reopening this editor.', 'fleet-for-openstation' ) );
+			} else {
+				$result = OpenStation_Fleet_Recovery::save( $site, $values );
+			}
+			$response['fleet_recovery'][ $window ] = is_wp_error( $result ) ? array( 'error' => $result->get_error_message() ) : $result;
+		}
+		return $response;
+	}
+
+	/**
+	 * Resolve local recovery only after connection ownership checks.
+	 *
+	 * @param string $id Connection id.
+	 * @param string $action list, restore or delete.
+	 * @param string $key Checkpoint key.
+	 * @return array|WP_Error
+	 */
+	public static function recovery( $id, $action = 'list', $key = '' ) {
+		$site = self::get_site( $id );
+		if ( ! OpenStation_Fleet_Access::allowed( $site, 'recovery', true ) ) {
+			return new WP_Error( 'fleet_recovery_forbidden', __( 'This connection is unavailable.', 'fleet-for-openstation' ) );
+		}
+		if ( 'list' === $action ) {
+			return OpenStation_Fleet_Recovery::listing( $site );
+		}
+		$data = OpenStation_Fleet_Recovery::read( $site, $key );
+		if ( is_wp_error( $data ) ) {
+			return $data;
+		}
+		if ( 'delete' === $action ) {
+			return OpenStation_Fleet_Recovery::remove( $key ) ? array() : new WP_Error( 'fleet_recovery_busy', __( 'The checkpoint could not be removed. Try again.', 'fleet-for-openstation' ) );
+		}
+		$editor = $data['editor'];
+		$type   = self::content_type( $site, $editor['content_type'] );
+		if ( is_wp_error( $type ) ) {
+			return $type;
+		}
+		$editor['descriptor'] = $type;
+		// Keep the original fingerprint and request id. A conflict or uncertain
+		// creation must remain blocked after recovery, not silently become a retry.
+		return $editor;
+	}
+
+	/**
+	 * Review and execute a small comment batch with durable individual outcomes.
+	 *
+	 * @param string $id Connection id.
+	 * @param array  $values Selection or signed review.
+	 * @param bool   $confirm Whether to execute the reviewed batch.
+	 * @return array|WP_Error
+	 */
+	public static function comment_batch( $id, $values, $confirm = false ) {
+		$site = self::get_site( $id );
+		if ( ! OpenStation_Fleet_Access::allowed( $site, 'comment-batch', true ) ) {
+			return new WP_Error( 'fleet_batch_forbidden', __( 'This connection is unavailable.', 'fleet-for-openstation' ) );
+		}
+		$site['_fleet_operation'] = 'comment-batch';
+		$site['_fleet_write']     = true;
+		$status                   = $values['status'] ?? '';
+		if ( ! is_string( $status ) || ! in_array( $status, array( 'approved', 'hold', 'spam', 'trash' ), true ) ) {
+			return new WP_Error( 'fleet_batch_status', __( 'Choose a moderation status.', 'fleet-for-openstation' ) );
+		}
+		if ( ! $confirm ) {
+			$ids = $values['ids'] ?? array();
+			if ( ! is_array( $ids ) || ! $ids || count( $ids ) > 12 || array_filter(
+				$ids,
+				static function ( $value ) {
+					return ! is_scalar( $value ) || ! preg_match( '/\A[1-9][0-9]{0,9}\z/', (string) $value ); }
+			) ) {
+				return new WP_Error( 'fleet_batch_ids', __( 'Select between one and twelve comments.', 'fleet-for-openstation' ) );
+			}
+			$ids   = array_values( array_unique( array_map( 'intval', $ids ) ) );
+			$items = self::remote_request(
+				$site,
+				'GET',
+				'wp/v2/comments?' . http_build_query(
+					array(
+						'context'  => 'edit',
+						'status'   => 'all',
+						'include'  => $ids,
+						'per_page' => 12,
+						'_fields'  => 'id,status,author_name,content',
+					),
+					'',
+					'&'
+				)
+			);
+			if ( is_wp_error( $items ) || count( $items ) !== count( $ids ) ) {
+				return new WP_Error( 'fleet_batch_missing', __( 'Some selected comments are no longer available. Refresh the queue.', 'fleet-for-openstation' ) );
+			}
+			$review = array(
+				'status'     => $status,
+				'expires'    => time() + 600,
+				'request_id' => wp_generate_uuid4(),
+				'items'      => array(),
+			);
+			foreach ( $items as $item ) {
+				$review['items'][] = array(
+					'id'      => (int) $item['id'],
+					'status'  => $item['status'],
+					'author'  => sanitize_text_field( $item['author_name'] ),
+					'excerpt' => wp_trim_words( wp_strip_all_tags( $item['content']['rendered'] ?? '' ), 20 ),
+				);
+			}
+			$review['token'] = hash_hmac( 'sha256', self::recovery_context( $id ) . wp_json_encode( $review ), wp_salt( 'auth' ) );
+			return $review;
+		}
+		$token = $values['token'] ?? '';
+		unset( $values['token'] );
+		if ( ! is_string( $token ) || ! is_numeric( $values['expires'] ?? null ) || $values['expires'] < time() || $values['expires'] > time() + 600 || ! hash_equals( hash_hmac( 'sha256', self::recovery_context( $id ) . wp_json_encode( $values ), wp_salt( 'auth' ) ), $token ) ) {
+			return new WP_Error( 'fleet_batch_review', __( 'Review this selection again before moderating.', 'fleet-for-openstation' ) );
+		}
+		$key  = 'fleet_batch_' . hash( 'sha256', self::recovery_context( $id ) . $values['request_id'] );
+		$lock = OpenStation_Fleet_Repository::acquire_lock( $key, get_current_user_id() );
+		if ( false === $lock ) {
+			return new WP_Error( 'fleet_batch_busy', __( 'This batch is already running. Wait for its results.', 'fleet-for-openstation' ) );
+		}
+		try {
+			$results  = get_transient( $key );
+			$results  = is_array( $results ) ? $results : array();
+			$deadline = microtime( true ) + 20;
+			foreach ( $values['items'] as $item ) {
+				$comment_id = $item['id'];
+				if ( isset( $results[ $comment_id ] ) ) {
+					continue; }
+				if ( microtime( true ) >= $deadline - 1 ) {
+					$results[ $comment_id ] = __( 'Not attempted: batch time limit. Select again to review.', 'fleet-for-openstation' );
+					continue;
+				}
+				$current = self::remote_request( $site, 'GET', 'wp/v2/comments/' . $comment_id . '?context=edit&_fields=id,status', null, $deadline );
+				if ( is_wp_error( $current ) || ( $current['status'] ?? '' ) !== $item['status'] ) {
+					$results[ $comment_id ] = __( 'Not changed: unavailable or changed since review.', 'fleet-for-openstation' );
+					continue;
+				}
+				$results[ $comment_id ] = __( 'Result unknown: check WordPress before trying again.', 'fleet-for-openstation' );
+				if ( ! set_transient( $key, $results, DAY_IN_SECONDS ) ) {
+					return new WP_Error( 'fleet_batch_storage', __( 'Batch stopped because its safety journal could not be saved. Refresh the queue before continuing.', 'fleet-for-openstation' ) );
+				}
+				$result = self::remote_request( $site, 'POST', 'wp/v2/comments/' . $comment_id, array( 'status' => $status ), $deadline );
+				if ( ! is_wp_error( $result ) && ( $result['status'] ?? '' ) === $status ) {
+					$results[ $comment_id ] = __( 'Updated.', 'fleet-for-openstation' );
+				}
+				set_transient( $key, $results, DAY_IN_SECONDS );
+			}
+			set_transient( $key, $results, DAY_IN_SECONDS );
+			self::invalidate_read_cache( $id );
+			self::record_activity( $id, $site, 'comment-batch', __( 'Reviewed comment batch processed; inspect individual outcomes.', 'fleet-for-openstation' ), 'info' );
+			return array( 'results' => $results );
+		} finally {
+			OpenStation_Fleet_Repository::release_lock( $lock );
+		}
 	}
 
 	/**
@@ -979,7 +1260,7 @@ final class OpenStation_Fleet {
 	 */
 	public static function content_revisions( $id, $editor, $revision = 0, $page = 1 ) {
 		$site = self::get_site( $id );
-		if ( ! is_array( $site ) || ! current_user_can( self::CAPABILITY ) ) {
+		if ( ! OpenStation_Fleet_Access::allowed( $site, 'content' ) ) {
 			return new WP_Error( 'fleet_content_site', __( 'That site is unavailable.', 'fleet-for-openstation' ) );
 		}
 		$type   = self::content_type( $site, isset( $editor['content_type'] ) ? $editor['content_type'] : '' );
@@ -1017,15 +1298,17 @@ final class OpenStation_Fleet {
 	public static function content_review( $id, $values ) {
 		$site = self::get_site( $id );
 		$body = OpenStation_Fleet_Content::body( $values );
-		if ( ! current_user_can( self::CAPABILITY ) || ! is_array( $site ) || is_wp_error( $body ) ) {
+		if ( ! OpenStation_Fleet_Access::allowed( $site, 'content', true ) || is_wp_error( $body ) ) {
 			return is_wp_error( $body ) ? $body : new WP_Error( 'fleet_review_site', __( 'That site is unavailable.', 'fleet-for-openstation' ) );
 		}
-		$type = self::content_type( $site, isset( $values['content_type'] ) ? $values['content_type'] : '' );
+		$site['_fleet_operation'] = 'content';
+		$site['_fleet_write']     = true;
+		$type                     = self::content_type( $site, isset( $values['content_type'] ) ? $values['content_type'] : '' );
 		if ( is_wp_error( $type ) ) {
 			return $type;
 		}
 		$parent  = absint( isset( $values['content_id'] ) ? $values['content_id'] : 0 );
-		$current = $parent ? self::remote_request( $site, 'GET', $type['route'] . '/' . $parent . '?context=edit&_fields=id,title,content,excerpt,slug,status,date_gmt' ) : array();
+		$current = $parent ? self::remote_request( $site, 'GET', $type['route'] . '/' . $parent . '?context=edit&_fields=' . OpenStation_Fleet_Content::FIELDS ) : array();
 		if ( is_wp_error( $current ) ) {
 			return $current;
 		}
@@ -1066,7 +1349,7 @@ final class OpenStation_Fleet {
 	 * @return array|WP_Error
 	 */
 	public static function work_views( $id, $action = 'read', $values = array() ) {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
+		if ( ! current_user_can( self::CAPABILITY ) || 0 === strpos( $id, 'shared_' ) ) {
 			return new WP_Error( 'fleet_views_forbidden', __( 'You cannot manage these views.', 'fleet-for-openstation' ) );
 		}
 		$lock = 'read' !== $action ? OpenStation_Fleet_Repository::acquire_lock( 'views_' . $id, get_current_user_id() ) : null;
@@ -1209,13 +1492,51 @@ final class OpenStation_Fleet {
 	 * @return array|WP_Error
 	 */
 	public static function app_action( $id, $action, $values = array() ) {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
+		$values = is_array( $values ) ? $values : array();
+		$lock   = null;
+		if ( in_array( $action, array( 'content', 'trash-content' ), true ) && ! empty( $values['content_id'] ) ) {
+			$site = self::get_site( sanitize_key( $id ) );
+			if ( ! OpenStation_Fleet_Access::allowed( $site, $action, true ) ) {
+				return new WP_Error( 'fleet_role_forbidden', __( 'Your Fleet role does not allow this action. Ask the connection owner.', 'fleet-for-openstation' ) );
+			}
+			// Serialize Fleet writers to this item, including delegated teammates.
+			// A writer outside this hub still requires Core's remote conflict check.
+			$key  = hash( 'sha256', $site['site_url'] . ':' . sanitize_key( $values['content_type'] ?? '' ) . ':' . absint( $values['content_id'] ) );
+			$lock = OpenStation_Fleet_Repository::acquire_lock( 'content_write', 0, $key );
+			if ( false === $lock ) {
+				return new WP_Error( 'fleet_content_busy', __( 'Another Fleet window is saving this item. Keep your edits and try again after it finishes.', 'fleet-for-openstation' ) );
+			}
+		}
+		try {
+			return self::dispatch_action( $id, $action, $values );
+		} finally {
+			if ( null !== $lock ) {
+				OpenStation_Fleet_Repository::release_lock( $lock );
+			}
+		}
+	}
+
+	/**
+	 * Execute one authorized action, under the caller's item lock when necessary.
+	 *
+	 * @param string $id Connection id.
+	 * @param string $action Action name.
+	 * @param array  $values Untrusted values.
+	 * @return array|WP_Error
+	 */
+	private static function dispatch_action( $id, $action, $values ) {
+		if ( ! self::can_use() ) {
 			return new WP_Error( 'openstation_fleet_forbidden', __( 'You are not allowed to manage Fleet.', 'fleet-for-openstation' ) );
 		}
 		$id     = sanitize_key( $id );
 		$action = sanitize_key( $action );
 		$values = is_array( $values ) ? $values : array();
 		$site   = self::get_site( $id );
+		if ( ! OpenStation_Fleet_Access::allowed( $site, $action, true ) ) {
+			return new WP_Error( 'fleet_role_forbidden', __( 'Your Fleet role does not allow this action. Ask the connection owner.', 'fleet-for-openstation' ) );
+		}
+		$site['_fleet_operation'] = $action;
+		$site['_fleet_write']     = true;
 		if ( '' === $id || ! is_array( $site ) ) {
 			return new WP_Error( 'openstation_fleet_site_missing', __( 'That connected site no longer exists.', 'fleet-for-openstation' ) );
 		}
@@ -1295,7 +1616,7 @@ final class OpenStation_Fleet {
 				$route   = $descriptor['route'] . ( $content_id ? '/' . $content_id : '' );
 				$current = array();
 				if ( $content_id ) {
-					$current = self::remote_request( $site, 'GET', $route . '?context=edit&_fields=id,title,content,excerpt,slug,status,date_gmt' );
+					$current = self::remote_request( $site, 'GET', $route . '?context=edit&_fields=' . OpenStation_Fleet_Content::FIELDS );
 					if ( is_wp_error( $current ) ) {
 						return $current;
 					}
@@ -1309,6 +1630,9 @@ final class OpenStation_Fleet {
 				// Core has no atomic compare-and-swap: this detects changes before the write, not a remote lock.
 				$result  = $content_id ? self::remote_request( $site, 'trash-content' === $action ? 'DELETE' : 'POST', $route, $body ) : self::create_content_once( $id, $site, $route, $body, isset( $values['request_id'] ) ? $values['request_id'] : '' );
 				$message = 'trash-content' === $action ? __( 'Moved to Trash on WordPress.', 'fleet-for-openstation' ) : __( 'Saved on WordPress.', 'fleet-for-openstation' );
+				if ( ! is_wp_error( $result ) && ! OpenStation_Fleet_Recovery::complete( $site, $values ) ) {
+					$message .= ' ' . __( 'An older recovery checkpoint could not be cleared; remove it from Recovered drafts.', 'fleet-for-openstation' );
+				}
 				break;
 			case 'comment':
 				$comment_id     = absint( isset( $values['comment_id'] ) ? $values['comment_id'] : 0 );
@@ -1319,6 +1643,37 @@ final class OpenStation_Fleet {
 				$result = self::remote_request( $site, 'POST', 'wp/v2/comments/' . $comment_id, array( 'status' => $comment_status ) );
 				// translators: %s: comment status.
 				$message = sprintf( __( 'Comment moved to %s.', 'fleet-for-openstation' ), $comment_status );
+				break;
+			case 'reply-comment':
+				$parent = absint( $values['comment_id'] ?? 0 );
+				$text   = $values['content'] ?? null;
+				if ( ! $parent || ! is_string( $text ) || '' === trim( $text ) || strlen( $text ) > 20000 ) {
+					return new WP_Error( 'fleet_reply_invalid', __( 'Write a reply smaller than 20 KB.', 'fleet-for-openstation' ) );
+				}
+				$comment = self::remote_request( $site, 'GET', 'wp/v2/comments/' . $parent . '?context=edit&_fields=id,post,status' );
+				if ( is_wp_error( $comment ) || empty( $comment['post'] ) || in_array( $comment['status'] ?? '', array( 'spam', 'trash' ), true ) ) {
+					return new WP_Error( 'fleet_reply_parent', __( 'This comment is unavailable for replies. Refresh the queue.', 'fleet-for-openstation' ) );
+				}
+				$result  = self::create_content_once(
+					$id,
+					$site,
+					'wp/v2/comments',
+					array(
+						'post'    => $comment['post'],
+						'parent'  => $parent,
+						'content' => $text,
+					),
+					$values['request_id'] ?? ''
+				);
+				$message = __( 'Reply saved on WordPress.', 'fleet-for-openstation' );
+				break;
+			case 'upload-media':
+				$upload = OpenStation_Fleet_REST_Client::upload_body( $values );
+				if ( is_wp_error( $upload ) ) {
+					return $upload;
+				}
+				$result  = self::create_content_once( $id, $site, 'wp/v2/media', array(), $values['request_id'] ?? '', $upload );
+				$message = __( 'File uploaded to this site’s media library.', 'fleet-for-openstation' );
 				break;
 			case 'media':
 				$media_id = absint( isset( $values['media_id'] ) ? $values['media_id'] : 0 );
@@ -1485,37 +1840,38 @@ final class OpenStation_Fleet {
 	/**
 	 * Do not replay an uncertain create. Core has no idempotency key support.
 	 *
-	 * @param string $id Site id.
-	 * @param array  $site Connection.
-	 * @param string $route Core collection route.
-	 * @param array  $body Validated content.
-	 * @param string $request_id Per-editor operation id.
+	 * @param string     $id Site id.
+	 * @param array      $site Connection.
+	 * @param string     $route Core collection route.
+	 * @param array      $body Validated content.
+	 * @param string     $request_id Per-editor operation id.
+	 * @param array|null $upload Validated binary upload, if this creates media.
 	 * @return array|WP_Error
 	 */
-	private static function create_content_once( $id, $site, $route, $body, $request_id ) {
+	private static function create_content_once( $id, $site, $route, $body, $request_id, $upload = null ) {
 		if ( ! is_string( $request_id ) || ! wp_is_uuid( $request_id ) ) {
-			return new WP_Error( 'fleet_create_id', __( 'Open a new draft from the content list before saving.', 'fleet-for-openstation' ) );
+			return new WP_Error( 'fleet_create_id', __( 'Reopen this workflow before creating an item.', 'fleet-for-openstation' ) );
 		}
 		$key  = 'fleet_create_' . get_current_user_id() . '_' . hash( 'sha256', $id . $request_id );
 		$lock = OpenStation_Fleet_Repository::acquire_lock( $key, get_current_user_id() );
 		if ( false === $lock ) {
-			return new WP_Error( 'fleet_create_busy', __( 'This draft is already being saved. Wait for the result before trying again.', 'fleet-for-openstation' ) );
+			return new WP_Error( 'fleet_create_busy', __( 'This item is already being saved. Wait for the result before trying again.', 'fleet-for-openstation' ) );
 		}
 		try {
 			if ( false !== get_transient( $key ) ) {
-				return new WP_Error( 'fleet_create_uncertain', __( 'This creation was already attempted. Check the content list before creating another draft; WordPress may have saved it. Your text is still here to copy.', 'fleet-for-openstation' ) );
+				return new WP_Error( 'fleet_create_uncertain', __( 'This creation was already attempted. Refresh the relevant list before creating another item; WordPress may have saved it.', 'fleet-for-openstation' ) );
 			}
-			if ( ! set_transient( $key, 'attempted', DAY_IN_SECONDS ) ) {
-				return new WP_Error( 'fleet_create_storage', __( 'Fleet could not protect this draft against duplicate creation. Nothing was sent. Try again.', 'fleet-for-openstation' ) );
+			if ( ! set_transient( $key, 'attempted', 14 * DAY_IN_SECONDS ) ) {
+				return new WP_Error( 'fleet_create_storage', __( 'Fleet could not protect this item against duplicate creation. Nothing was sent. Try again.', 'fleet-for-openstation' ) );
 			}
-			$result = self::remote_request( $site, 'POST', $route, $body );
+			$result = null === $upload ? self::remote_request( $site, 'POST', $route, $body ) : OpenStation_Fleet_REST_Client::upload( $site, $upload );
 			if ( is_wp_error( $result ) ) {
 				$error = $result->get_error_data();
 				if ( is_array( $error ) && isset( $error['status'] ) && in_array( $error['status'], array( 400, 401, 403, 404, 405, 413, 422 ), true ) ) {
 					delete_transient( $key );
 					return $result;
 				}
-				return new WP_Error( 'fleet_create_uncertain', __( 'Fleet could not confirm whether WordPress saved this draft. Check the content list before trying again. Your text is still here to copy.', 'fleet-for-openstation' ) );
+				return new WP_Error( 'fleet_create_uncertain', __( 'Fleet could not confirm whether WordPress saved this item. Refresh the relevant list before trying again. Keep a copy of any unsaved text.', 'fleet-for-openstation' ) );
 			}
 			return $result;
 		} finally {
@@ -1737,6 +2093,14 @@ final class OpenStation_Fleet {
 		}
 
 		$original_user = get_current_user_id();
+		update_option(
+			'openstation_fleet_last_sync_run',
+			array(
+				'started'  => time(),
+				'finished' => 0,
+			),
+			false
+		);
 		try {
 			$jobs     = array();
 			$user_ids = OpenStation_Fleet_Repository::user_ids();
@@ -1746,7 +2110,7 @@ final class OpenStation_Fleet {
 					continue;
 				}
 				wp_set_current_user( $user_id );
-				foreach ( self::get_site_ids() as $site_id ) {
+				foreach ( OpenStation_Fleet_Repository::site_ids( $user_id, array( __CLASS__, 'normalize_site_record' ) ) as $site_id ) {
 					$jobs[] = array(
 						'user_id' => $user_id,
 						'site_id' => sanitize_key( $site_id ),
@@ -1808,6 +2172,14 @@ final class OpenStation_Fleet {
 				delete_option( self::CRON_CURSOR );
 			}
 		} finally {
+			update_option(
+				'openstation_fleet_last_sync_run',
+				array(
+					'started'  => (int) $started,
+					'finished' => time(),
+				),
+				false
+			);
 			wp_set_current_user( $original_user );
 			OpenStation_Fleet_Repository::release_lock( $lock );
 		}
@@ -2345,6 +2717,9 @@ final class OpenStation_Fleet {
 	 * @return string
 	 */
 	private static function authorization_url( $endpoint, $args ) {
+		// Keep Core's approval page top-level even for an opted-in OpenStation
+		// user. This documented per-request flag does not change their preference.
+		$args['desktop_mode_classic'] = '1';
 		foreach ( $args as $key => $value ) {
 			$args[ $key ] = rawurlencode( (string) $value );
 		}
@@ -2428,12 +2803,14 @@ final class OpenStation_Fleet {
 	 * @param string $site_id Fleet site id.
 	 */
 	private static function get_site( $site_id ) {
+		if ( 0 === strpos( $site_id, 'shared_' ) ) {
+			return OpenStation_Fleet_Access::resolve( $site_id ); }
 		return OpenStation_Fleet_Repository::get( get_current_user_id(), $site_id, array( __CLASS__, 'normalize_site_record' ) );
 	}
 
 	/** Fetch only the current user's compact site id index. */
 	private static function get_site_ids() {
-		return OpenStation_Fleet_Repository::site_ids( get_current_user_id(), array( __CLASS__, 'normalize_site_record' ) );
+		return array_merge( OpenStation_Fleet_Repository::site_ids( get_current_user_id(), array( __CLASS__, 'normalize_site_record' ) ), OpenStation_Fleet_Access::ids() );
 	}
 
 	/**
@@ -2443,6 +2820,12 @@ final class OpenStation_Fleet {
 	 * @param array  $site    Compact connection record.
 	 */
 	private static function get_site_search( $site_id, $site ) {
+		if ( ! empty( $site['_fleet_alias'] ) ) {
+			return array(
+				'search_index'       => array(),
+				'search_index_state' => array(),
+				'storage_revision'   => 0,
+			); }
 		return OpenStation_Fleet_Repository::get_search_state(
 			get_current_user_id(),
 			$site_id,
@@ -2459,6 +2842,8 @@ final class OpenStation_Fleet {
 	 * @param array  $search  Search payload.
 	 */
 	private static function save_site_search( $site_id, $site, $search ) {
+		if ( ! empty( $site['_fleet_alias'] ) ) {
+			return true; }
 		return OpenStation_Fleet_Repository::save_search_state(
 			get_current_user_id(),
 			$site_id,
@@ -2483,6 +2868,12 @@ final class OpenStation_Fleet {
 	 * @return bool Whether the record was persisted.
 	 */
 	private static function save_site( $site_id, $site, $replace_fields = array(), $allow_create = false ) {
+		if ( ! empty( $site['_fleet_alias'] ) ) {
+			$live = OpenStation_Fleet_Access::resolve( $site['_fleet_alias'] );
+			if ( ! $live || $live['connection_generation'] !== $site['connection_generation'] || array_diff( $replace_fields, self::remote_state_fields() ) ) {
+				return false; }
+			return ! $replace_fields || OpenStation_Fleet_Repository::save( $live['_fleet_owner'], $live['_fleet_source'], $site, $replace_fields, array( __CLASS__, 'normalize_site_record' ) );
+		}
 		$replace_fields = array_values( array_unique( array_filter( array_map( 'sanitize_key', (array) $replace_fields ) ) ) );
 		return OpenStation_Fleet_Repository::save(
 			get_current_user_id(),

@@ -4,7 +4,7 @@ Tags: openstation, agency, site management, application passwords
 Requires at least: 7.1
 Tested up to: 7.1
 Requires PHP: 8.3
-Stable tag: 0.9.0-rc.1
+Stable tag: 0.10.0-alpha.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -15,6 +15,8 @@ Turn one OpenStation install into a calm, windowed workspace for every WordPress
 One WordPress site is easy. Ten unrelated client sites mean ten dashboards, ten places to check, and ten chances to make the right change on the wrong site.
 
 Fleet gives that work one home. One OpenStation install becomes the hub for every WordPress site you manage. See which sites need attention, open each site in its own clearly named window, and work without juggling bookmarks and wp-admin tabs.
+
+This source tree is the unreleased 0.10.0-alpha.1 reliability preview for development and staging. The public 0.9.0-rc.1 download does not include every workflow described below. The 0.10 preview's saved multi-window fix is proven locally in OpenStation PR #763 but is not yet part of a released OpenStation build.
 
 = The work comes to you =
 
@@ -88,6 +90,13 @@ No. Fleet is a native App Framework application and intentionally has no classic
 10. Review the destination and changes before confirming a publishing or scheduling save.
 
 == Changelog ==
+
+= 0.10.0-alpha.1 =
+
+* Unreleased reliability milestone: opt-in encrypted crash recovery, Core publishing options, media uploads, comment replies and reviewed bulk moderation.
+* Explicit hub team roles with live revocation, cache freshness and retry visibility.
+* Mandatory browser CI and a disposable multi-origin MySQL/MariaDB load lab.
+* Verified saved multi-window identity with the exact OpenStation PR #763 build; an upstream release, long endurance run and independent hosting pilots remain launch gates.
 
 = 0.9.0-rc.1 =
 

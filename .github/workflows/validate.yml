@@ -8,6 +8,63 @@ permissions:
   contents: read
 
 jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: '8.3'
+      - run: npm ci && npx playwright install --with-deps chromium firefox webkit
+      - run: ./bin/build.sh
+      - name: Build the pinned App Framework dependency (read-only upstream)
+        run: |
+          git clone --filter=blob:none https://github.com/WordPress/openstation.git "$RUNNER_TEMP/fleet-openstation"
+          # Exact head of WordPress/openstation#763. Replace with the containing
+          # released commit once the saved-instance fix lands upstream.
+          git -C "$RUNNER_TEMP/fleet-openstation" checkout --detach a48d37b8bfdc6453056eb9345ff610c396a71e15
+          npm --prefix "$RUNNER_TEMP/fleet-openstation" ci
+          npm --prefix "$RUNNER_TEMP/fleet-openstation" run build
+          cd "$RUNNER_TEMP/fleet-openstation"
+          bash bin/package.sh fleet-lab-openstation.zip
+      - name: Install ZIP in independent HTTPS MySQL/MariaDB fixtures
+        env:
+          FLEET_LAB_WRITES: '1'
+          FLEET_LAB_COUNT: '2'
+          FLEET_LAB_POSTS: '50'
+        run: FLEET_LAB_OPENSTATION_ZIP="$RUNNER_TEMP/fleet-openstation/fleet-lab-openstation.zip" node tests/lab/provision.js
+      - name: Verify real upgrade from the pinned published 0.8.0 ZIP
+        env:
+          FLEET_LAB_WRITES: '1'
+        run: |
+          mkdir -p tests/lab/runtime/upgrade
+          curl --fail --location --output tests/lab/runtime/upgrade/fleet-for-openstation.zip https://github.com/RegionallyFamous/fleet-for-openstation/releases/download/v0.8.0/fleet-for-openstation.zip
+          node tests/lab/upgrade.js
+      - name: Mandatory real-browser mutation and isolation tests (no opt-out)
+        env:
+          FLEET_E2E_WRITES: '1'
+          FLEET_E2E_USER_ID: '1'
+          FLEET_E2E_BROWSERS: chromium,firefox,webkit
+        run: |
+          export FLEET_LAB_RUNNER="$PWD/tests/lab/runtime/runner.json"
+          export FLEET_E2E_HUB_PATH="$PWD/tests/lab/runtime/sites/site-0"
+          export FLEET_E2E_MANAGED_PATH="$PWD/tests/lab/runtime/sites/site-1"
+          npx playwright test --config=tests/e2e/playwright.config.js
+      - name: Saved multi-window identity regression (launch-blocking)
+        env:
+          FLEET_LAB_WRITES: '1'
+        run: node tests/lab/restore-regression.js
+      - name: Remove only the disposable job containers and volumes
+        if: always()
+        run: |
+          if test -f tests/lab/runtime/compose.json; then
+            docker compose -f tests/lab/runtime/compose.json down --volumes
+          fi
+
   quality:
     runs-on: ubuntu-latest
     steps:

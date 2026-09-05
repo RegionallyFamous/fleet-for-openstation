@@ -3,8 +3,20 @@ const { URL } = require( 'node:url' );
 
 const hubPath = process.env.FLEET_E2E_HUB_PATH;
 
+function wpCommand( sitePath, args ) {
+	const labFile = process.env.FLEET_LAB_RUNNER;
+	if ( labFile ) {
+		const lab = JSON.parse( require( 'node:fs' ).readFileSync( labFile, 'utf8' ) );
+		const id = lab.mapping[ sitePath ];
+		if ( ! Number.isInteger( id ) || ! /^[a-f0-9]{12,64}$/.test( lab.container ) ) { throw new Error( 'Invalid or unmapped disposable Docker fixture.' ); }
+		return [ 'docker', [ 'exec', '-e', `FLEET_LAB_SITE=${ id }`, lab.container, 'wp', '--allow-root', '--path=/var/www/html', ...args ] ];
+	}
+	return [ 'wp', [ `--path=${ sitePath }`, ...args ] ];
+}
+
 function runWp( args ) {
-	return execFileSync( 'wp', [ `--path=${ hubPath }`, ...args ], {
+	const [ bin, command ] = wpCommand( hubPath, args );
+	return execFileSync( bin, command, {
 		encoding: 'utf8',
 		timeout: 60_000,
 		stdio: [ 'ignore', 'pipe', 'pipe' ],
@@ -83,7 +95,7 @@ foreach ( $user_ids as $user_id ) {
 		}
 		$fixture = array(
 			'user_id' => (int) $user->ID,
-			'sites' => array_slice( $safe_sites, 0, 2 ),
+			'sites' => $safe_sites,
 			'migration' => array(
 				'aggregate_count' => $aggregate_count,
 				'aggregate_removed' => ! metadata_exists( 'user', $user->ID, OpenStation_Fleet_Repository::AGGREGATE_META ),
@@ -130,6 +142,13 @@ function loadWordPressFixture() {
 	const discoveredUrl = parseMarkedJson( runWp( [ 'eval', "echo 'FLEET_E2E_JSON:' . wp_json_encode( home_url() );" ] ) );
 	const hubUrl = String( process.env.FLEET_E2E_HUB_URL || discoveredUrl ).trim().replace( /\/$/, '' );
 	const fleet = discoverFleet();
+	// A large fleet's sorted record IDs need not put the explicit write fixture
+	// among the first two. Choose that exact target, then one independent site.
+	if ( process.env.FLEET_E2E_MANAGED_PATH ) {
+		const targetUrl = runSiteWp( process.env.FLEET_E2E_MANAGED_PATH, "echo 'FLEET_E2E_JSON:' . wp_json_encode( home_url() );" ).replace( /\/$/, '' );
+		fleet.sites.sort( ( a, b ) => Number( b.site_url.replace( /\/$/, '' ) === targetUrl ) - Number( a.site_url.replace( /\/$/, '' ) === targetUrl ) );
+	}
+	fleet.sites = fleet.sites.slice( 0, 2 );
 	return {
 		hubUrl,
 		userId: fleet.user_id,
@@ -143,7 +162,8 @@ function runSiteWp( sitePath, php ) {
 	if ( ! sitePath ) {
 		throw new Error( 'An explicit local fixture path is required for write tests.' );
 	}
-	const output = execFileSync( 'wp', [ `--path=${ sitePath }`, 'eval', php ], {
+	const [ bin, command ] = wpCommand( sitePath, [ 'eval', php ] );
+	const output = execFileSync( bin, command, {
 		encoding: 'utf8', stdio: [ 'ignore', 'pipe', 'pipe' ],
 		timeout: 60_000,
 		env: { ...process.env, WP_CLI_PHP_ARGS: '-d error_reporting=24575' },

@@ -1,0 +1,3 @@
+# Closed disposable Docker network only; no database ports are published.
+[client]
+ssl=0

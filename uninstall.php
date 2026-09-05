@@ -9,6 +9,7 @@
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
 require_once __DIR__ . '/includes/class-openstation-fleet-repository.php';
+require_once __DIR__ . '/includes/class-openstation-fleet-recovery.php';
 
 $openstation_fleet_blog_ids = is_multisite()
 	? get_sites(
@@ -27,7 +28,7 @@ foreach ( $openstation_fleet_blog_ids as $openstation_fleet_blog_id ) {
 	}
 
 	$openstation_fleet_user_ids = OpenStation_Fleet_Repository::user_ids();
-	foreach ( array( OpenStation_Fleet_Repository::activity_meta_key(), OpenStation_Fleet_Repository::app_id_meta_key() ) as $openstation_fleet_meta_key ) {
+	foreach ( array( OpenStation_Fleet_Repository::activity_meta_key(), OpenStation_Fleet_Repository::app_id_meta_key(), OpenStation_Fleet_Recovery::INDEX . get_current_blog_id() ) as $openstation_fleet_meta_key ) {
 		$openstation_fleet_user_ids = array_merge(
 			$openstation_fleet_user_ids,
 			get_users(
@@ -41,11 +42,13 @@ foreach ( $openstation_fleet_blog_ids as $openstation_fleet_blog_id ) {
 	}
 	foreach ( array_unique( array_map( 'intval', $openstation_fleet_user_ids ) ) as $openstation_fleet_user_id ) {
 		OpenStation_Fleet_Repository::uninstall_user_data( $openstation_fleet_user_id );
+		OpenStation_Fleet_Recovery::erase( $openstation_fleet_user_id );
 	}
 
 	wp_clear_scheduled_hook( 'openstation_fleet_scheduled_check' );
 	delete_option( 'openstation_fleet_scheduled_check_lock' );
 	delete_option( 'openstation_fleet_scheduled_check_cursor' );
+	delete_option( 'openstation_fleet_last_sync_run' );
 
 	global $wpdb;
 	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Uninstall must enumerate dynamic Fleet keys before deleting them through Core APIs.
@@ -70,6 +73,15 @@ foreach ( $openstation_fleet_blog_ids as $openstation_fleet_blog_id ) {
 	);
 	foreach ( $openstation_fleet_runtime_options as $openstation_fleet_runtime_option ) {
 		delete_option( $openstation_fleet_runtime_option );
+	}
+
+	// Encrypted orphan checkpoints and outcome journals may outlive their user index.
+	foreach ( array( 'fleet_recovery_', 'fleet_create_', 'fleet_batch_', 'os_fleet_', 'openstation_fleet_' ) as $openstation_fleet_transient_prefix ) {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Uninstall enumerates only Fleet-owned transient names; Core performs deletion and cache invalidation.
+		$openstation_fleet_transients = $wpdb->get_col( $wpdb->prepare( "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s", $wpdb->esc_like( '_transient_' . $openstation_fleet_transient_prefix ) . '%' ) );
+		foreach ( $openstation_fleet_transients as $openstation_fleet_transient ) {
+			delete_transient( substr( $openstation_fleet_transient, strlen( '_transient_' ) ) );
+		}
 	}
 
 	if ( $openstation_fleet_switched ) {

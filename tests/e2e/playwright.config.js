@@ -5,12 +5,18 @@ module.exports = defineConfig( {
 	fullyParallel: false,
 	workers: 1,
 	retries: process.env.CI ? 1 : 0,
+	// A retry is diagnostic evidence, not permission to ship a flaky gate.
+	failOnFlakyTests: true,
 	timeout: 45_000,
 	expect: {
 		timeout: 10_000,
 	},
 	reporter: process.env.CI ? 'line' : 'list',
-	outputDir: 'test-results',
+	outputDir: process.env.FLEET_E2E_OUTPUT || 'test-results',
+	projects: ( process.env.FLEET_E2E_BROWSERS || 'chromium' ).split( ',' ).map( ( browserName ) => {
+		if ( ! [ 'chromium', 'firefox', 'webkit' ].includes( browserName ) ) { throw new Error( 'Unsupported test browser.' ); }
+		return { name: browserName, use: { browserName, launchOptions: browserName === 'chromium' ? require( '../lab/browser-options' )() : {} } };
+	} ),
 	use: {
 		browserName: 'chromium',
 		headless: process.env.FLEET_E2E_HEADED !== '1',

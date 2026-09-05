@@ -3,7 +3,7 @@
  * Plugin Name:       Fleet for OpenStation
  * Plugin URI:        https://github.com/RegionallyFamous/fleet-for-openstation
  * Description:       Manage connected WordPress sites through OpenStation's App Framework and WordPress Core REST APIs.
- * Version:           0.9.0-rc.1
+ * Version:           0.10.0-alpha.1
  * Requires at least: 7.1
  * Requires PHP:      8.3
  * Requires Plugins:  desktop-mode
@@ -17,7 +17,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'OPENSTATION_FLEET_VERSION', '0.9.0-rc.1' );
+define( 'OPENSTATION_FLEET_VERSION', '0.10.0-alpha.1' );
 define( 'OPENSTATION_FLEET_DIR', plugin_dir_path( __FILE__ ) );
 define( 'OPENSTATION_FLEET_URL', plugin_dir_url( __FILE__ ) );
 

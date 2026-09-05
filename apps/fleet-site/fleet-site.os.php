@@ -26,21 +26,27 @@ $openstation_fleet_site_app = App::define( 'fleet-site' )
 	->min_size( 700, 520 )
 	->placement( 'none' )
 	->placeable( false )
-	->capabilities( OpenStation_Fleet::CAPABILITY )
+	->can( array( 'OpenStation_Fleet', 'can_use' ) )
 	->style( OPENSTATION_FLEET_DIR . 'assets/fleet-app.css' )
 	->state(
 		array(
-			'site_id'     => '',
-			'notice'      => '',
-			'response'    => '',
-			'collections' => array(),
-			'views_open'  => false,
-			'editor'      => array(),
-			'review'      => array(),
-			'history'     => array(),
-			'revision'    => array(),
-			'connection'  => array(),
-			'saved'       => '',
+			'site_id'       => '',
+			'notice'        => '',
+			'response'      => '',
+			'collections'   => array(),
+			'views_open'    => false,
+			'editor'        => array(),
+			'review'        => array(),
+			'history'       => array(),
+			'revision'      => array(),
+			'picker'        => array(),
+			'recovery'      => array(),
+			'recovery_open' => false,
+			'operation_id'  => '',
+			'comment_batch' => array(),
+			'reply'         => array(),
+			'connection'    => array(),
+			'saved'         => '',
 		)
 	)
 	->mount( array( 'OpenStation_Fleet_App', 'mount_site' ) )
@@ -162,9 +168,22 @@ $openstation_fleet_site_app = App::define( 'fleet-site' )
 			'label' => __( 'Explorer', 'fleet-for-openstation' ),
 			'view'  => $openstation_fleet_site_view( 'api' ),
 		)
+	)
+	->tab(
+		'team',
+		array(
+			'label' => __( 'Team', 'fleet-for-openstation' ),
+			'view'  => $openstation_fleet_site_view( 'team' ),
+		)
+	)
+	->action(
+		'share-site',
+		static function ( State $state, Os $os, array $args ) {
+			OpenStation_Fleet_App::site_action( 'share-site', $state, $os, $args );
+		}
 	);
 
-foreach ( array( 'save-view', 'apply-view', 'delete-view', 'review-content', 'confirm-content', 'cancel-review', 'revision-history', 'preview-revision', 'use-revision', 'close-history', 'reconnect', 'authorize', 'cancel-connect', 'browse', 'edit-content', 'new-content', 'close-editor', 'trash-content', 'open-hub', 'open-site-url', 'refresh', 'finish-setup', 'install-openstation', 'save-content', 'save-comment', 'save-media', 'save-settings', 'save-agency', 'change-plugin', 'install-plugin', 'create-user', 'save-user', 'api-request', 'disconnect' ) as $openstation_fleet_site_action ) {
+foreach ( array( 'review-comments', 'confirm-comments', 'close-comment-batch', 'reply-comment', 'upload-media', 'recovery-list', 'restore-draft', 'delete-draft', 'publishing-options', 'save-view', 'apply-view', 'delete-view', 'review-content', 'confirm-content', 'cancel-review', 'revision-history', 'preview-revision', 'use-revision', 'close-history', 'reconnect', 'authorize', 'cancel-connect', 'browse', 'edit-content', 'new-content', 'close-editor', 'trash-content', 'open-hub', 'open-site-url', 'refresh', 'finish-setup', 'install-openstation', 'save-content', 'save-comment', 'save-media', 'save-settings', 'save-agency', 'change-plugin', 'install-plugin', 'create-user', 'save-user', 'api-request', 'disconnect' ) as $openstation_fleet_site_action ) {
 	$openstation_fleet_site_app->action(
 		$openstation_fleet_site_action,
 		static function ( State $state, Os $os, array $args ) use ( $openstation_fleet_site_action ) {

@@ -5,6 +5,7 @@ const { loadWordPressFixture, runSiteWp } = require( './wordpress-fixture' );
 const fixture = loadWordPressFixture();
 
 async function openShell( page ) {
+	await page.addInitScript( () => performance.setResourceTimingBufferSize( 2000 ) );
 	await page.context().addCookies( fixture.cookies );
 	await page.goto( `${ fixture.hubUrl }/wp-admin/admin.php?page=openstation`, {
 		waitUntil: 'domcontentloaded',
@@ -83,7 +84,14 @@ async function openManagedSites( page ) {
 }
 
 function assertNoConsoleErrors( errors ) {
-	expect( errors, errors.join( '\n' ) ).toEqual( [] );
+	// OpenStation 9bac917 emits this progressive-enhancement viewport setting.
+	// WebKit ignores it safely. Keep this exact dependency warning visible in
+	// test annotations; never suppress generic console or JavaScript failures.
+	const known = 'Viewport argument key "interactive-widget" not recognized and ignored.';
+	const warnings = errors.filter( ( message ) => message === known );
+	if ( warnings.length ) { test.info().annotations.push( { type: 'upstream-warning', description: known } ); }
+	const unexpected = errors.filter( ( message ) => message !== known );
+	expect( unexpected, unexpected.join( '\n' ) ).toEqual( [] );
 }
 
 test.describe( 'Fleet App Framework integration', () => {

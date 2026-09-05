@@ -10,7 +10,9 @@ const output = path.resolve( __dirname, '../../assets/screenshots' );
 ( async () => {
 	const browser = await chromium.launch();
 	try {
-		const context = await browser.newContext( { ignoreHTTPSErrors: true, viewport: { width: 1510, height: 1000 }, deviceScaleFactor: 1 } );
+		// Leave room below tall editor windows for the real desktop dock; do not
+		// hide chrome or composite away an overlap in a promotional capture.
+		const context = await browser.newContext( { ignoreHTTPSErrors: true, viewport: { width: 1510, height: 1100 }, deviceScaleFactor: 1 } );
 		await context.addCookies( fixture.cookies );
 		const page = await context.newPage();
 		page.setDefaultTimeout( 30_000 );
@@ -22,7 +24,7 @@ const output = path.resolve( __dirname, '../../assets/screenshots' );
 			window.wp.hooks.addFilter( 'os.window.geometry', 'fleet/screenshots', ( geometry, context ) => {
 				if ( ! [ 'fleet-site', 'fleet-for-openstation' ].includes( context.baseId ) ) { return geometry; }
 				if ( window.__fleetCaptureMultiple ) { return { ...geometry, x: 14 + 744 * siteIndex++, y: 70, width: 730, height: 795, state: 'normal' }; }
-				return { ...geometry, x: 255, y: 45, width: 1000, height: context.baseId === 'fleet-for-openstation' ? 640 : 835, state: 'normal' };
+				return { ...geometry, x: 255, y: 45, width: 1000, height: context.baseId === 'fleet-for-openstation' ? 640 : 980, state: 'normal' };
 			} );
 		} );
 		async function close() {
@@ -85,6 +87,7 @@ const output = path.resolve( __dirname, '../../assets/screenshots' );
 		await page.locator( '.os-window__tab[data-panel="api"]' ).click();
 		await capture( 'api-explorer' );
 		await close();
+		await page.setViewportSize( { width: 1510, height: 1000 } );
 		await page.evaluate( () => { window.__fleetCaptureMultiple = true; } );
 		for ( const site of fixture.sites ) {
 			await page.evaluate( ( id ) => window.wp.os.openNewWindow( 'fleet-site', { source: 'fleet-demo', params: { site_id: id } } ), site.id );

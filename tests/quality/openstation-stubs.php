@@ -23,6 +23,7 @@ final class App {
 	public function placement( string $placement ): self {}
 	public function placeable( bool $placeable ): self {}
 	public function capabilities( string ...$capabilities ): self {}
+	public function can( callable $gate ): self {}
 	public function style( string $path ): self {}
 	public function state( array $state ): self {}
 	public function mount( callable $callback ): self {}

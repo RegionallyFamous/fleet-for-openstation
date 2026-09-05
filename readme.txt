@@ -16,7 +16,7 @@ One WordPress site is easy. Ten unrelated client sites mean ten dashboards, ten 
 
 Fleet gives that work one home. One OpenStation install becomes the hub for every WordPress site you manage. See which sites need attention, open each site in its own clearly named window, and work without juggling bookmarks and wp-admin tabs.
 
-This source tree is the unreleased 0.10.0-alpha.1 reliability preview for development and staging. The public 0.9.0-rc.1 download does not include every workflow described below. The 0.10 preview's saved multi-window fix is proven locally in OpenStation PR #763 but is not yet part of a released OpenStation build.
+Version 0.10.0-alpha.1 is a public GitHub reliability preview for development, staging, and agency pilots. It is not a general-availability release. Its saved multi-window behavior is verified with the exact OpenStation build in PR #763, but that fix is not yet part of a released OpenStation build. Long-duration and independent-hosting launch gates remain open.
 
 = The work comes to you =
 
@@ -93,7 +93,7 @@ No. Fleet is a native App Framework application and intentionally has no classic
 
 = 0.10.0-alpha.1 =
 
-* Unreleased reliability milestone: opt-in encrypted crash recovery, Core publishing options, media uploads, comment replies and reviewed bulk moderation.
+* Reliability preview: opt-in encrypted crash recovery, Core publishing options, media uploads, comment replies and reviewed bulk moderation.
 * Explicit hub team roles with live revocation, cache freshness and retry visibility.
 * Mandatory browser CI and a disposable multi-origin MySQL/MariaDB load lab.
 * Verified saved multi-window identity with the exact OpenStation PR #763 build; an upstream release, long endurance run and independent hosting pilots remain launch gates.
